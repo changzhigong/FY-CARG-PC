@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "调拨单专用打印扩展",
+  "version": "1.0",
+  "description": "ERP系统调拨单专用打印预览工具",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://xb.fy-carg.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://xb.fy-carg.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "调拨单打印"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["clodop-local.js"],
+      "matches": ["https://xb.fy-carg.com/*"]
+    }
+  ]
+}

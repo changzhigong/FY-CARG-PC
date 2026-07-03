@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JSON 显示</title>
+</head>
+<body>
+    <div id="data-container"></div>
+
+    <script>
+        // 假设你从服务器或其他地方获取了 JSON 字符串
+        var jsonString = '{"name": "张三", "age": 30, "city": "北京"}';
+        
+        // 解析 JSON 字符串为 JavaScript 对象
+        var data = JSON.parse(jsonString);
+        
+        // 创建显示数据的 HTML 元素
+        var container = document.getElementById('data-container');
+        var ul = document.createElement('ul');
+        for (var key in data) {
+            var li = document.createElement('li');
+            li.textContent = key + ': ' + data[key];
+            ul.appendChild(li);
+        }
+        container.appendChild(ul);
+    </script>
+</body>
+</html>

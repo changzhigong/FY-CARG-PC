@@ -1,0 +1,50 @@
+<!-- popup.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            width: 200px;
+            padding: 10px;
+            font-family: Arial, sans-serif;
+        }
+        
+        .status {
+            margin-bottom: 10px;
+            padding: 8px;
+            border-radius: 4px;
+        }
+        
+        .status.online {
+            background-color: #e1f3d8;
+            color: #67c23a;
+        }
+        
+        .status.offline {
+            background-color: #fef0f0;
+            color: #f56c6c;
+        }
+        
+        button {
+            width: 100%;
+            padding: 8px;
+            background-color: #409eff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        button:hover {
+            background-color: #66b1ff;
+        }
+    </style>
+</head>
+<body>
+    <h3>调拨单打印扩展</h3>
+    <div id="status" class="status offline">未检测到调拨单页面</div>
+    <button id="refresh">刷新检测</button>
+    
+    <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# 密钥与凭证
+secret.key
+config_password.txt
+*.pem
+
+# Cookies / Session
+cookies*
+Cookies_temp*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.temp
+gh_install/
+
+# 大型二进制
+*.rar
+*.mp4
+*.crx
+
+# 工作日志
+.workbuddy/memory/
