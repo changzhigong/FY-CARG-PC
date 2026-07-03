@@ -242,14 +242,14 @@ class ExcelDataProcessPage(BasePage):
                 total_data = total_json.get("data", {}) if total_json.get("resultCode") == 200 or total_json.get("code") == 200 else {}
 
                 # 在主线程更新 UI
-                self.controller.after(0, lambda: self._update_table(raw_rows, total_data))
+                self.controller.after(0, lambda: self._update_table(raw_rows, total_data, warehouse_name))
             else:
                 self.controller.after(0, lambda: self.status_var.set("登录已过期，请重新登录"))
 
         except Exception as e:
             self.controller.after(0, lambda: self._query_error(str(e)))
 
-    def _update_table(self, raw_rows, total_data):
+    def _update_table(self, raw_rows, total_data, warehouse_name):
         """更新表格和汇总（主线程）"""
         # 清空现有数据
         for item in self.tree.get_children():
