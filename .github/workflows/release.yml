@@ -1,0 +1,103 @@
+name: Build & Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          BASE_VERSION=$(cat VERSION | tr -d '\r\n ')
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          RUN_NUM=${{ github.run_number }}
+          TAG="v${BASE_VERSION}"
+          echo "base_version=${BASE_VERSION}" >> $GITHUB_OUTPUT
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "run_num=${RUN_NUM}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "app_name=FY-CARG-PC-v${BASE_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller `
+            --onefile `
+            --windowed `
+            --log-level WARN `
+            --add-data "VERSION;." `
+            --name "${{ steps.version.outputs.app_name }}" `
+            main.py
+
+      - name: Delete old tag (if exists)
+        shell: bash
+        run: |
+          git push origin --delete ${{ steps.version.outputs.tag }} 2>/dev/null || true
+
+      - name: Force-create tag
+        shell: bash
+        run: |
+          git tag -f ${{ steps.version.outputs.tag }}
+          git push origin ${{ steps.version.outputs.tag }} -f
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          cat > release_notes.md << EOF
+          ## 构建信息
+
+          | 项目 | 值 |
+          |------|-----|
+          | 版本 | ${{ steps.version.outputs.tag }} |
+          | 构建编号 | #${{ steps.version.outputs.run_num }} |
+          | 提交 | [${{ steps.version.outputs.short_sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) |
+          | 分支 | ${{ github.ref_name }} |
+          | 触发时间 | $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') |
+
+          ## 变更
+
+          EOF
+
+          git log -5 --pretty=format:'- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))' >> release_notes.md
+          echo '' >> release_notes.md
+          echo '' >> release_notes.md
+          echo '---' >> release_notes.md
+          echo '> 每次推送到 `main` 分支时自动构建并更新此 Release。' >> release_notes.md
+
+      - name: Create/Update Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: FY-CARG-PC ${{ steps.version.outputs.tag }}
+          body_path: release_notes.md
+          files: |
+            dist/${{ steps.version.outputs.app_name }}.exe
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
