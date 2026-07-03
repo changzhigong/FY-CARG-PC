@@ -51,6 +51,16 @@ jobs:
             --windowed `
             --log-level WARN `
             --add-data "VERSION;." `
+            --hidden-import win32com `
+            --hidden-import win32com.client `
+            --hidden-import pythoncom `
+            --hidden-import babel.numbers `
+            --hidden-import babel.core `
+            --hidden-import tkcalendar `
+            --hidden-import PIL._tkinter_finder `
+            --collect-submodules openpyxl `
+            --collect-submodules cryptography `
+            --collect-all babel `
             --name "${{ steps.version.outputs.app_name }}" `
             main.py
 
