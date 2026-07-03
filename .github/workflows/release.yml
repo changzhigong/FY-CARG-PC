@@ -61,6 +61,8 @@ jobs:
             --collect-submodules openpyxl `
             --collect-submodules cryptography `
             --collect-all babel `
+            --hidden-import tkinterweb `
+            --collect-submodules tkinterweb `
             --name "${{ steps.version.outputs.app_name }}" `
             main.py
 
