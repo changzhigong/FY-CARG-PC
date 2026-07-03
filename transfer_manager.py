@@ -2650,12 +2650,20 @@ class TransferProcessPage(BasePage):
         # 准备详情数据，确保所有必要字段都存在
         detail_data = self.prepare_detail_data_for_submission(detail_data)
         
+        # 获取乐观锁 recordVersion（取自查询数据 header 中的 recordVersion 字段）
+        record_version = ""
+        try:
+            record_version = self.transfer_data.get("header", {}).get("recordVersion", "")
+        except Exception:
+            record_version = ""
+        
         # 构造POST数据
         post_data = {
             "detailDtoListDelete": [],
             "id": int(transfer_id),
             "moveWarehouseId": movewarehouse_id,
             "onshelf_by": onshelf_by,
+            "recordVersion": record_version,
             "removeWarehouseId": removewarehouse_id,
             "transferNo": transfer_no,
             "transferType": transfer_type,
@@ -2756,6 +2764,13 @@ class TransferProcessPage(BasePage):
 
         # 准备详情数据，确保所有必要字段都存在
         detail_data = self.prepare_detail_data_for_submission(detail_data)
+        
+        # 获取乐观锁 recordVersion（取自查询数据 header 中的 recordVersion 字段）
+        record_version = ""
+        try:
+            record_version = self.transfer_data.get("header", {}).get("recordVersion", "")
+        except Exception:
+            record_version = ""
              
         # 构造POST数据
         post_data = {
@@ -2763,6 +2778,7 @@ class TransferProcessPage(BasePage):
             "id": int(transfer_id),
             "moveWarehouseId": movewarehouse_id,
             "onshelf_by": onshelf_by,
+            "recordVersion": record_version,
             "removeWarehouseId": removewarehouse_id,
             "transferNo": transfer_no,
             "transferType": transfer_type,
