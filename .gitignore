@@ -38,3 +38,6 @@ gh_install/
 
 # 工作日志
 .workbuddy/memory/
+
+# 构建产物
+*.exe
