@@ -7,10 +7,30 @@ import json
 from home_page import HomePage
 from excel_data_processor import ExcelDataProcessPage
 from deliver_report import DeliverReportProcessPage
+from waybill_manage import WaybillManagePage
 from outbound_manager import outBoundProcessPage
 from picking_shipping import OneKeyProcessPage
 from transfer_manager import TransferProcessPage
+from transfer_application import TransferApplicationPage
+from transfer_change import TransferChangePage
 from config_manager import ConfigPage
+from inventory_freeze import InventoryFreezePage
+from packing_detail import PackingDetailPage
+from bill_query import BillQueryPage
+from sales_detail import SalesDetailPage
+from inventory_record import InventoryRecordPage
+from transfer_detail_query import TransferDetailQueryPage
+from reimbursement_manage import ReimbursementManagePage
+from reimbursement_review import ReimbursementReviewPage
+from other_pay_manage import OtherPayManagePage
+from internal_use_manage import InternalUseManagePage
+from internal_use_review import InternalUseReviewPage
+from other_inbound_review import OtherInboundReviewPage
+from other_outbound_apply import OtherOutboundApplyPage
+from other_outbound_review import OtherOutboundReviewPage
+from purchase_sign import PurchaseSignPage
+from purchase_putaway import PurchasePutawayPage
+from help_center import HelpCenterPage
 
 
 
@@ -136,10 +156,30 @@ class MainApplication:
             "HomePage": HomePage,
             "ExcelDataProcessPage": ExcelDataProcessPage,
             "DeliverReportProcessPage": DeliverReportProcessPage,
+            "WaybillManagePage": WaybillManagePage,
             "outBoundProcessPage": outBoundProcessPage,
             "OneKeyProcessPage": OneKeyProcessPage,
             "TransferProcessPage": TransferProcessPage,
-            "ConfigPage": ConfigPage
+            "TransferApplicationPage": TransferApplicationPage,
+            "TransferChangePage": TransferChangePage,
+            "ConfigPage": ConfigPage,
+            "InventoryFreezePage": InventoryFreezePage,
+            "PackingDetailPage": PackingDetailPage,
+            "BillQueryPage": BillQueryPage,
+            "SalesDetailPage": SalesDetailPage,
+            "InventoryRecordPage": InventoryRecordPage,
+            "TransferDetailQueryPage": TransferDetailQueryPage,
+            "ReimbursementManagePage": ReimbursementManagePage,
+            "ReimbursementReviewPage": ReimbursementReviewPage,
+            "OtherPayManagePage": OtherPayManagePage,
+            "InternalUseManagePage": InternalUseManagePage,
+            "InternalUseReviewPage": InternalUseReviewPage,
+            "OtherInboundReviewPage": OtherInboundReviewPage,
+            "OtherOutboundApplyPage": OtherOutboundApplyPage,
+            "OtherOutboundReviewPage": OtherOutboundReviewPage,
+            "PurchaseSignPage": PurchaseSignPage,
+            "PurchasePutawayPage": PurchasePutawayPage,
+            "HelpCenterPage": HelpCenterPage
         }
         
         # 首先只创建首页，其他页面延迟加载
@@ -507,8 +547,14 @@ class MainApplication:
         tabs_info = [
             ("首页", []),
             ("快捷操作", ["送货日报", "财务日报"]),
-            ("仓库理货", ["出库管理", "一键发运"]),
-            ("库内作业", ["调拨入库"]),
+            ("仓库理货", ["出库单管理", "拣货单管理", "发运单管理"]),
+            ("库内作业", ["调拨入库", "调拨申请", "移库管理"]),
+            ("仓储查询", ["库存冻结查询", "装箱明细查询", "账单查询", "销售明细", "出入库流水记录", "调拨明细查询"]),
+            ("报销管理", ["报销管理", "报销审核", "其他支付管理"]),
+            ("内部领用", ["内部领用", "部门审核"]),
+            ("其他出入库管理", ["其他入库审核", "报损出库申请", "其它出库审核"]),
+            ("采购入库", ["到货签收", "入库上架"]),
+            ("帮助", []),
             ("配置管理", [])
         ]
         
@@ -533,6 +579,8 @@ class MainApplication:
                     btn.config(command=lambda: self.show_frame("HomePage"))
                 elif tab_name == "配置管理":
                     btn.config(command=self.open_config_page)
+                elif tab_name == "帮助":
+                    btn.config(command=lambda: self.show_frame("HelpCenterPage"))
         
         # 创建配置页访问控制状态
         self._config_unlocked = False
@@ -597,9 +645,28 @@ class MainApplication:
             page_map = {
                 "送货日报": "DeliverReportProcessPage",
                 "财务日报": "ExcelDataProcessPage",
-                "出库管理": "outBoundProcessPage",
-                "一键发运": "OneKeyProcessPage",
-                "调拨入库": "TransferProcessPage"
+                "出库单管理": "outBoundProcessPage",
+                "拣货单管理": "OneKeyProcessPage",
+                "发运单管理": "WaybillManagePage",
+                "调拨入库": "TransferProcessPage",
+                "调拨申请": "TransferApplicationPage",
+                "移库管理": "TransferChangePage",
+                "库存冻结查询": "InventoryFreezePage",
+                "装箱明细查询": "PackingDetailPage",
+                "账单查询": "BillQueryPage",
+                "销售明细": "SalesDetailPage",
+                "出入库流水记录": "InventoryRecordPage",
+                "调拨明细查询": "TransferDetailQueryPage",
+                "报销管理": "ReimbursementManagePage",
+                "报销审核": "ReimbursementReviewPage",
+                "其他支付管理": "OtherPayManagePage",
+                "内部领用": "InternalUseManagePage",
+                "部门审核": "InternalUseReviewPage",
+                "其他入库审核": "OtherInboundReviewPage",
+                "报损出库申请": "OtherOutboundApplyPage",
+                "其它出库审核": "OtherOutboundReviewPage",
+                "到货签收": "PurchaseSignPage",
+                "入库上架": "PurchasePutawayPage"
             }
             
             # if button_text in page_map:
@@ -806,7 +873,26 @@ class MainApplication:
             "ExcelDataProcessPage": "快捷操作",
             "outBoundProcessPage": "仓库理货",
             "OneKeyProcessPage": "仓库理货",
-            "TransferProcessPage": "库内作业"
+            "WaybillManagePage": "仓库理货",
+            "TransferProcessPage": "库内作业",
+            "TransferApplicationPage": "库内作业",
+            "TransferChangePage": "库内作业",
+            "InventoryFreezePage": "仓储查询",
+            "PackingDetailPage": "仓储查询",
+            "BillQueryPage": "仓储查询",
+            "SalesDetailPage": "仓储查询",
+            "InventoryRecordPage": "仓储查询",
+            "TransferDetailQueryPage": "仓储查询",
+            "ReimbursementManagePage": "报销管理",
+            "ReimbursementReviewPage": "报销管理",
+            "OtherPayManagePage": "报销管理",
+            "InternalUseManagePage": "内部领用",
+            "InternalUseReviewPage": "内部领用",
+            "OtherInboundReviewPage": "其他出入库管理",
+            "OtherOutboundApplyPage": "其他出入库管理",
+            "OtherOutboundReviewPage": "其他出入库管理",
+            "PurchaseSignPage": "采购入库",
+            "PurchasePutawayPage": "采购入库"
         }
         
         # 获取当前页面所属的选项卡组
@@ -821,9 +907,28 @@ class MainApplication:
                     page_name_map = {
                         "DeliverReportProcessPage": "送货日报",
                         "ExcelDataProcessPage": "财务日报", 
-                        "outBoundProcessPage": "出库管理",
-                        "OneKeyProcessPage": "一键发运",
-                        "TransferProcessPage": "调拨入库"
+                        "outBoundProcessPage": "出库单管理",
+                        "OneKeyProcessPage": "拣货单管理",
+                        "WaybillManagePage": "发运单管理",
+                        "TransferProcessPage": "调拨入库",
+                        "TransferApplicationPage": "调拨申请",
+                        "TransferChangePage": "移库管理",
+                        "InventoryFreezePage": "库存冻结查询",
+                        "PackingDetailPage": "装箱明细查询",
+                        "BillQueryPage": "账单查询",
+                        "SalesDetailPage": "销售明细",
+                        "InventoryRecordPage": "出入库流水记录",
+                        "TransferDetailQueryPage": "调拨明细查询",
+                        "ReimbursementManagePage": "报销管理",
+                        "ReimbursementReviewPage": "报销审核",
+                        "OtherPayManagePage": "其他支付管理",
+                        "InternalUseManagePage": "内部领用",
+                        "InternalUseReviewPage": "部门审核",
+                        "OtherInboundReviewPage": "其他入库审核",
+                        "OtherOutboundApplyPage": "报损出库申请",
+                        "OtherOutboundReviewPage": "其它出库审核",
+                        "PurchaseSignPage": "到货签收",
+                        "PurchasePutawayPage": "入库上架"
                     }
                     if current_page in page_name_map:
                         self.tab_buttons[tab_name].config(text=page_name_map[current_page])
@@ -840,6 +945,8 @@ class MainApplication:
                 self.highlight_active_tab("首页")
             elif current_page == "ConfigPage":
                 self.highlight_active_tab("配置管理")
+            elif current_page == "HelpCenterPage":
+                self.highlight_active_tab("帮助")
 
 
     def highlight_active_tab(self, active_tab_name):

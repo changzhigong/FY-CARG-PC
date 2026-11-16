@@ -8,6 +8,11 @@ from base_page import BasePage
 from copy import deepcopy
 from tooltip_manager import tooltip_manager
 # 常量定义
+# 拣货单查询（Web/安卓同源端点）
+PICKING_QUERY_URL = (
+    'https://xb.fy-carg.com/dmscloud.part/warehouse/outboundManagement/pickingListQueryNew'
+)
+
 HEADERS = {
     'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
@@ -31,7 +36,13 @@ driver_data = loaded_config["driver_data"]
 warehouse_vehicle_data = loaded_config["warehouse_vehicle_data"]
 
 class OneKeyProcessPage(BasePage):
-    """一键发运处理页面"""
+    """拣货单管理（原名「一键发运」）
+
+    菜单名已按安卓端 WarehouseTallyMenu.vue 改为「拣货单管理」，功能不变：
+    拣货单查询 / 拣货保存 / 拣货完成 / 批量一键发运 / 打印预览。
+    安卓端 PickingManagement.vue 的 doQuery 注释明确「对齐 Python 端参数格式
+    （picking_shipping.py picking_query 方法）」，故本页即该模块的参数真相源。
+    """
     def __init__(self, parent, controller):
         # 定义打印状态映射关系
         self.print_status_mapping = {
@@ -69,6 +80,15 @@ class OneKeyProcessPage(BasePage):
         # 初始化分页信息变量
         self.page_info_var = tk.StringVar()  # 新增这一行
         self.print_status_var =tk.StringVar()
+        # 快捷搜索（对齐安卓 PickingManagement.vue 的 6 个输入框，原来被硬编码为空）
+        self.quick_vars = {
+            'picking_order_no': tk.StringVar(),   # 拣货单号
+            'outbound_no': tk.StringVar(),        # 出库单号
+            'order_number': tk.StringVar(),       # 订单号
+            'part_code': tk.StringVar(),          # 产品编码 (CARG全码)
+            'part_name': tk.StringVar(),          # 产品名称
+            'dealer_name': tk.StringVar(),        # 客户名称
+        }
         self.action_controls_enabled: bool = False
         self.picking_status_listbox: tk.Listbox | None = None
         self.picking_status_scrollbar: ttk.Scrollbar | None = None
@@ -209,9 +229,22 @@ class OneKeyProcessPage(BasePage):
         tk.Button(row1, text="清除筛选", command=self.clear_filters,
                  bg="#4CAF50", relief=tk.FLAT).pack(side=tk.LEFT, padx=60)
 
-##        # 第二行筛选条件
-##        row2 = tk.Frame(filter_frame, bg="#f0f0f0")
-##        row2.pack(fill=tk.X, pady=5)
+        # 第二行：快捷搜索（对齐安卓 PickingManagement.vue 的 quick-search 六个输入框）
+        # 安卓端这 6 个值会下发到 pickingListQueryNew；本页原先全部硬编码为空串。
+        row2 = tk.Frame(filter_frame, bg="#f0f0f0")
+        row2.pack(fill=tk.X, pady=3)
+        quick_labels = [
+            ('picking_order_no', '拣货单号:'),
+            ('outbound_no', '出库单号:'),
+            ('order_number', '订单号:'),
+            ('part_code', '产品编码:'),
+            ('part_name', '产品名称:'),
+            ('dealer_name', '客户名称:'),
+        ]
+        for key, label in quick_labels:
+            tk.Label(row2, text=label, bg="#f0f0f0").pack(side=tk.LEFT, padx=(5, 1))
+            tk.Entry(row2, textvariable=self.quick_vars[key], width=14).pack(
+                side=tk.LEFT, padx=(0, 5))
 
     def _set_widget_enabled(self, widget, enable: bool):
         try:
@@ -233,23 +266,57 @@ class OneKeyProcessPage(BasePage):
             except Exception:
                 pass
 
+    def build_query_params(self):
+        """构造 pickingListQueryNew 查询参数。
+
+        键集合保持本页原有 URL 不变，只补两处真实缺口（有安卓/Web 源码证据）：
+        1) 6 个快捷搜索值原来被硬编码为空串，现取自 quick_vars；
+        2) endTime 原来完全未下发（end_cal 控件形同虚设），现补上。
+        """
+        warehouse_id = self.controller.options.get(self.warehouse_var.get(), "")
+        box = self.picking_status_listbox
+        indices = box.curselection() if box is not None else ()
+        picking_status = ",".join(
+            str(self.picking_status_mapping[box.get(i)]) for i in indices
+        )
+        quick = {k: (v.get() or "").strip() for k, v in self.quick_vars.items()}
+        try:
+            endtime = (self.end_cal.get() or "").strip()
+        except Exception:
+            endtime = ""
+        return {
+            'picking_order_no': quick['picking_order_no'],
+            'outbound_no': quick['outbound_no'],
+            'order_number': quick['order_number'],
+            'warehouse_id': warehouse_id,
+            'dealer_code': '',
+            'dealer_name': quick['dealer_name'],
+            'dealerName': '',
+            'packageStatus': '',
+            'print_status': '',
+            'created_by': '',
+            'logistics_mode': '',
+            'sortOrder': '90591001',
+            'part_code': quick['part_code'],
+            'part_name': quick['part_name'],
+            'picking_status': picking_status,
+            'startTime': (self.start_cal.get() or "").strip(),
+            'endTime': endtime,
+            'salesman': '',
+            'line': '',
+            'limit': 1500,
+            'pageNum': 1,
+            'outboundType': '',
+            'location_area': '',
+            'outboundStatus': '',
+            'orderTypeStr': '',
+        }
+
     def picking_query(self):
         """查询拣货单"""
-        warehouse_name = self.warehouse_var.get()
-        warehouse_id = self.controller.options.get(warehouse_name,"")
-        starttime = self.start_cal.get()
-
-        # 获取拣货状态（多选）
-        picking_status_by_indices = self.picking_status_listbox.curselection()
-        print(picking_status_by_indices)
-        if len(picking_status_by_indices)==0:
-            picking_status =""
-        else:
-            picking_status = ",".join(["%s" % self.picking_status_mapping[self.picking_status_listbox.get(i)] for i in picking_status_by_indices])
-        print(picking_status)
         headers = {'Referer': "https://xb.fy-carg.com/"}
-        picking_query_url=f'https://xb.fy-carg.com/dmscloud.part/warehouse/outboundManagement/pickingListQueryNew?picking_order_no=&outbound_no=&order_number=&warehouse_id={warehouse_id}&dealer_code=&dealer_name=&dealerName=&packageStatus=&print_status=&created_by=&logistics_mode=&sortOrder=90591001&part_code=&part_name=&picking_status={picking_status}&startTime={starttime}&salesman=&line=&limit=1500&pageNum=1&outboundType=&location_area=&outboundStatus=&orderTypeStr='
-        r = self.controller.session.get(picking_query_url,headers=headers) 
+        r = self.controller.session.get(
+            PICKING_QUERY_URL, params=self.build_query_params(), headers=headers)
 
         # 检查登录状态
         if not self._check_response(r):
@@ -331,7 +398,9 @@ class OneKeyProcessPage(BasePage):
         # 修复：检查 self.picking_status_listbox 是否为 None
         if self.picking_status_listbox is not None:
             self.picking_status_listbox.selection_clear(0, tk.END)
-        
+        for var in self.quick_vars.values():
+            var.set("")
+
         self.apply_filters()
 
     def setup_data_table(self, parent):

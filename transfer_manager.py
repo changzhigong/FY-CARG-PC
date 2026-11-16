@@ -112,6 +112,11 @@ class TransferProcessPage(BasePage):
             for order in orders:
                 # 调拨类型转换
                 transfer_type_code = order.get("transferType", "")
+                # ⚠️ 先留存原始数字再转文本：Web 端 initPage 是直接
+                #    `addForm.transferType = a.transferType`（列表行原始数字直传），提交报文须为数字。
+                #    此处的文本替换只服务于列表展示，故另存原始值供提交时使用，避免用界面文本反查映射
+                #    （界面文本一旦与 mapping key 不匹配，反查会退化为空值）。
+                order["_transferTypeRaw"] = transfer_type_code
                 for text, code in self.transfer_type_mapping.items():
                     if code == transfer_type_code:
                         order["transferType"] = text
@@ -311,6 +316,11 @@ class TransferProcessPage(BasePage):
             self.location_entries = []
             self.quantity_spins = []
             self.quantity_vars = []
+            # 明细上下文失效（已无明细可拆/可合并）
+            self._detail_transfer_id = None
+            self._detail_status = ""
+            self._detail_log_data = None
+            self.update_split_buttons()
         except Exception as e:
             print(f"清理编辑控件时出错: {e}")
 
@@ -418,14 +428,16 @@ class TransferProcessPage(BasePage):
         self.detail_container.pack(fill=tk.BOTH, expand=False, pady=(5,0))
         
         # 创建详情Treeview
+        # 末列「拆」为拆行标记列（新增列一律追加在尾部，避免打乱既有按索引读写：
+        # 实际入库库位=#7 / 入库数量=#8，见 on_location_change / on_quantity_change）
         self.detail_columns = [
-            "序号","品牌", "CARG全码/产品编码", "产品名称", "入库指示库位","待入库数量", "实际入库库位","入库数量", "销售价", "加价率", "特别说明"
+            "序号","品牌", "CARG全码/产品编码", "产品名称", "入库指示库位","待入库数量", "实际入库库位","入库数量", "销售价", "加价率", "特别说明", "拆"
         ]
         self.transfer_detail_tree = ttk.Treeview(self.detail_container, columns=self.detail_columns,
                                       show="headings", height=15)
 
         # 配置详情列
-        detail_col_widths = [50, 100, 150, 300, 80, 80, 120, 80, 80, 80, 150]
+        detail_col_widths = [50, 100, 150, 300, 80, 80, 120, 80, 80, 80, 150, 40]
         for col, width in zip(self.detail_columns, detail_col_widths):
             self.transfer_detail_tree.heading(col, text=col)
             self.transfer_detail_tree.column(col, width=width, anchor="center")
@@ -470,6 +482,16 @@ class TransferProcessPage(BasePage):
         # 入库按钮
         self.transfer_in_btn = tk.Button(button_frame, text="入库", command=self.transfer_in, **button_style)
         self.transfer_in_btn.pack(side=tk.LEFT, padx=10)
+
+        # 拆行 / 合并按钮（对齐 Web inboundDialog 行内「拆行/合并」与安卓端 splitRow/mergeSplitRow）
+        # 语义：先在上方明细中选中一行，再点「拆行」把该行拆成两行（共享 detailId，可分库位/分批入库）；
+        #       选中拆行子行后点「合并」把其数量并回主行并移除该子行。
+        self.split_row_btn = tk.Button(button_frame, text="拆行", command=self.split_detail_row, **button_style)
+        self.split_row_btn.pack(side=tk.LEFT, padx=10)
+
+        self.merge_row_btn = tk.Button(button_frame, text="合并", command=self.merge_detail_row, **button_style)
+        self.merge_row_btn.pack(side=tk.LEFT, padx=10)
+        self.update_split_buttons()
         
         # 初始化上架人列表
         self.load_onshelf_persons()        
@@ -546,6 +568,22 @@ class TransferProcessPage(BasePage):
             # 没有选中项时禁用按钮
             self.temp_storage_btn.config(state=tk.DISABLED)
             self.transfer_in_btn.config(state=tk.DISABLED)
+
+    def update_split_buttons(self):
+        """按当前明细状态刷新「拆行/合并」按钮可用性。
+
+        仅当明细已载入且调拨状态为「待上架」（= 可编辑，见 display_detail_data 的 is_editable）
+        时可用；其余状态（待签收/已入库/未打开明细）禁用，避免误操作。
+        """
+        editable = (getattr(self, "_detail_status", "") == "待上架"
+                    and getattr(self, "_detail_transfer_id", None) is not None)
+        state = tk.NORMAL if editable else tk.DISABLED
+        for btn in (getattr(self, "split_row_btn", None), getattr(self, "merge_row_btn", None)):
+            if btn is not None:
+                try:
+                    btn.config(state=state)
+                except tk.TclError:
+                    pass
     
     def on_treeview_click(self, event):
         """处理Treeview的点击事件，实现复选框功能"""
@@ -1685,6 +1723,11 @@ class TransferProcessPage(BasePage):
     #     self.detail_container.pack(fill=tk.BOTH, expand=False, pady=(5,0))
     def display_detail_data(self, detail_data,inboundLog_data,transfer_status,transfer_id):
         """显示详情数据"""
+        # 记录当前明细上下文，供拆行/合并后重绘（_rerender_detail）与按钮状态使用
+        self._detail_transfer_id = transfer_id
+        self._detail_status = transfer_status
+        self._detail_log_data = inboundLog_data
+
         # 清空详情Treeview
         self.transfer_detail_tree.delete(*self.transfer_detail_tree.get_children())
 
@@ -1723,6 +1766,8 @@ class TransferProcessPage(BasePage):
         # 设置交替行标签
         self.transfer_detail_tree.tag_configure('oddrow', background='#E5E5E5')
         self.transfer_detail_tree.tag_configure('evenrow', background='#FFFFFF')        
+        # 拆行子行强调色（对齐安卓端 .detail-row.is-split 的紫色底，便于识别分批入库行）
+        self.transfer_detail_tree.tag_configure('splitrow', background='#E4D7F7')
         # 配置汇总行的样式
         self.transfer_detail_tree.tag_configure('summary', background='#f0f0f0', font=('Arial', 13, 'bold'))
 
@@ -1740,7 +1785,10 @@ class TransferProcessPage(BasePage):
 
         # 填充商品数据
         for i, (item_data, log_data) in enumerate(zip(detail_data, inboundLog_data if inboundLog_data else [{}] * len(detail_data)), 1):
-            tags = ('evenrow',) if i % 2 == 0 else ('oddrow',)
+            # 拆行子行判定（Web/安卓端同款标记：splitRow=10041001 或前端内部 _isSplit）
+            is_split = (item_data.get("_isSplit") is True
+                        or item_data.get("splitRow") in (10041001, "10041001"))
+            tags = ('splitrow',) if is_split else (('evenrow',) if i % 2 == 0 else ('oddrow',))
             # 获取当前行的库位选项
             outbound_Quantity = item_data.get("outboundQuantity",0)
 
@@ -1763,6 +1811,8 @@ class TransferProcessPage(BasePage):
             # 判断调拨状态是否允许交互
             is_editable = (transfer_status == "待上架")
 
+            # iid 必须唯一：同一 detailId 可出现在多行（原生多行或拆行子行共享 detailId），
+            # 用 detailId 直接作 iid 会「Item already exists」报错；末尾拼行号保证唯一。
             item_id = self.transfer_detail_tree.insert("", "end", values=(
                 i,
                 item_data.get("brandName",""),
@@ -1774,8 +1824,9 @@ class TransferProcessPage(BasePage):
                 inbound_qty,
                 item_data.get("salesPrice",""),
                 item_data.get("priceIncreaseRate",""),
-                item_data.get("remarks","")
-            ),iid = item_data.get("detailId"),tags=tags)
+                item_data.get("remarks",""),
+                "拆" if is_split else ""
+            ),iid = f"{item_data.get('detailId')}__{i}",tags=tags)
 
             self.detail_item_ids.append(item_id)
 
@@ -1798,13 +1849,17 @@ class TransferProcessPage(BasePage):
             self.location_entries.append(location_entry)
             
             # 创建实际入库数量调节钮
+            # 上限：正常行沿用 outboundQuantity（原行为不变）；拆行子行不带 outboundQuantity（Web 白名单
+            # 不含该字段），退化为 waitInboundQty，避免 Spinbox 上限为 0 无法用方向键加数量。
+            # 组内总量仍由 on_quantity_change 按 detailId 汇总校验（对齐安卓端 maxQtyForRow）。
+            spin_max = outbound_Quantity or wait_inbound_qty
             var = tk.StringVar(value=str(inbound_qty))
             var.trace_add('write', lambda *_, idx=i-1, v=var: self.on_quantity_change(idx,transfer_id, v))
             
             spin = tk.Spinbox(
                 self.transfer_detail_tree,
                 from_=0,
-                to=outbound_Quantity,
+                to=spin_max,
                 width=5,
                 bg='lightyellow',
                 textvariable=var,
@@ -1826,7 +1881,7 @@ class TransferProcessPage(BasePage):
             total_wait_inbound_qty,
             "",
             total_inbound_qty,
-            "", "", ""
+            "", "", "", ""
         ), tags=("summary",))
 
         print(self.detail_item_ids)
@@ -1838,6 +1893,9 @@ class TransferProcessPage(BasePage):
 
         # 显示详情容器
         self.detail_container.pack(fill=tk.BOTH, expand=False, pady=(5,0))
+        # 同步「拆行/合并」按钮可用性（仅待上架可编辑）
+        self.update_split_buttons()
+
     def position_detail_widgets(self, event=None):
         """将编辑控件定位到对应单元格"""
 ##        print(f"DEBUG: Positioning {len(self.location_entries)} location entries")
@@ -1975,49 +2033,36 @@ class TransferProcessPage(BasePage):
                         if location_data and 'realInboundLocationNoId' in location_data:
                             item["realInboundLocationNoId"] = location_data['realInboundLocationNoId']
                         
-                        # 库位改变时添加select_LOCATION_OPTIONS和select_locationOptionLoading字段
+                        # 库位改变时写入 select_LOCATION_OPTIONS / select_locationOptionLoading
+                        # （严格对齐 Web inboundDialog + HAR 17 份 transferIn 提交实证）
+                        #   · 未改库位的行：不在此处写 SLO，提交时由 prepare_detail_data_for_submission
+                        #     注入 2 字段 [{locationId, locationNo}]；
+                        #   · 改过库位的行：SLO = [<该选中库位的完整 6 字段对象>]，6 字段为
+                        #     enabledStatus / isValid / locationId / locationNo / locationType / warehouseId
+                        #     （即 findAllLocationValid 返回项原样），同时挂
+                        #     select_locationOptionLoading=False —— 该键「是否存在」即代表此行列位框被改动过。
+                        #   全量 HAR 核对：117 行明细 → 2 字段 65 行（未改位，无 loading 键）/
+                        #   6 字段 52 行（改位，带 loading 键），且 SLO **恒为单元素列表，从无 len>1**。
+                        #   故此处取「被选中那一个库位对象」即可，绝不能塞入整个搜索匹配列表。
                         if location_no is not None:  # 说明是通过选择触发的改变
-                            if location_data and 'other_data' in location_data:
-                                # 获取仓库ID
-                                movewarehouse_id = None
-                                # 从原始数据中查找调入仓库ID
-                                for record in self.original_data:
-                                    if str(record.get("id")) == str(transfer_id):
-                                        movewarehouse_id = record.get("moveWarehouseId")
-                                        break
-                                # 发送HTTP GET请求获取匹配的库位
-                                url = "https://xb.fy-carg.com/dmscloud.part/warehouse/transferIn/findAllLocationValid"
-                                params = {
-                                    "warehouseId": movewarehouse_id,
-                                    "locationNo": location_no
-                                }
-                                # 使用controller的session来保持登录状态
-                                # 修复：通过正确的途径获取controller
-                                controller = None
-                                widget = self
-                                while widget is not None:
-                                    if hasattr(widget, 'controller'):
-                                        controller = widget.controller
-                                        break
-                                    widget = getattr(widget, 'master', None) or getattr(widget, 'parent', None)
-                                
-                                if controller is None:
-                                    return
-                                
-                                response = controller.session.get(url, params=params, headers=HEADERS)
-
-                                response.raise_for_status()
-                                result = response.json()
-
-                                # 库位改变时，select_LOCATION_OPTIONS包含所有信息
-                                item["select_LOCATION_OPTIONS"] = result['data']
-                            elif actual_location:  # 只有当库位不为空时才添加
-                                # 库位改变时，如果没有完整数据，则至少包含locationNo和id
+                            # AutoCompleteEntry 已把选中的完整库位对象缓存为 other_data=[item]，
+                            # 直接取用即可（原实现重复发一次 findAllLocationValid 且塞整个结果列表，与 Web 不符）
+                            full_obj = None
+                            if location_data:
+                                od = location_data.get('other_data')
+                                if isinstance(od, list) and od and isinstance(od[0], dict):
+                                    full_obj = od[0]
+                            if full_obj:
+                                item["select_LOCATION_OPTIONS"] = [full_obj]
+                            elif actual_location:
+                                # 兜底（取不到完整对象）：退化为 2 字段，
+                                # 避免凭空拼一个 locationType/warehouseId 缺失的"不完整 6 字段"
                                 item["select_LOCATION_OPTIONS"] = [{
                                     "locationNo": actual_location,
-                                    "locationId": location_data.get('realInboundLocationNoId', '') if location_data else ''
+                                    "locationId": (location_data.get('realInboundLocationNoId')
+                                                   if location_data else None),
                                 }]
-                            # 库位改变时才添加select_locationOptionLoading字段
+                            # 库位框被改动过 → 挂 loading 标记（提交时原样保留，勿剥离）
                             item["select_locationOptionLoading"] = False
                         break
 # ... existing code ...
@@ -2105,6 +2150,34 @@ class TransferProcessPage(BasePage):
 
             # 归一化到非负整数
             new_val = max(0, int(raw_value))
+
+            # 组内校验（对齐 Web qtyValidate / 安卓端 qtyValidate + maxQtyForRow）：
+            # 拆行后多行共享 detailId，本行可填上限 = 该组 waitInboundQty - 同组其它行已填之和。
+            # 超上限则自动收敛并提示（单行校验会漏判「拆行合计超发」）。
+            if transfer_id and transfer_id in self.transfer_detail_cache:
+                rows = self.transfer_detail_cache[transfer_id]
+                if 0 <= row_idx < len(rows):
+                    row = rows[row_idx]
+                    gid = row.get("detailId")
+                    others = sum(int(x.get("inboundQuantity") or 0)
+                                 for i, x in enumerate(rows)
+                                 if i != row_idx and x.get("detailId") == gid)
+                    max_for_this = max(0, int(row.get("waitInboundQty") or 0) - others)
+                    if new_val > max_for_this:
+                        new_val = max_for_this
+                        try:
+                            if var is not None:
+                                var.set(str(new_val))
+                            else:
+                                self.quantity_spins[row_idx].delete(0, tk.END)
+                                self.quantity_spins[row_idx].insert(0, str(new_val))
+                        except Exception:
+                            pass
+                        messagebox.showwarning(
+                            "警告",
+                            f"「{row.get('partCode') or '该产品'}」入库数量合计不能超过待入库 "
+                            f"{row.get('waitInboundQty')}，已自动调整为 {new_val}")
+
             if var is not None:
                 try:
                     var.set(str(new_val))
@@ -2564,32 +2637,261 @@ class TransferProcessPage(BasePage):
 # # ... existing code ...
 # ... existing code ...
     def prepare_detail_data_for_submission(self, detail_data):
-        """为提交准备详情数据，确保所有必要字段都存在"""
-        for item in detail_data:
-            
-            # 确保select_LOCATION_OPTIONS字段存在
-            if "select_LOCATION_OPTIONS" not in item:
-                # 如果realInboundLocationNo存在，创建包含该信息的字典
-                real_location = item.get("realInboundLocationNo")
-                real_location_id = item.get("realInboundLocationNoId")
-                if real_location:  # 只有当库位不为空时才添加
-                    # 默认情况下，select_LOCATION_OPTIONS只包含locationNo和id字段
-                    item["select_LOCATION_OPTIONS"] = [{
-                        "locationNo": real_location,
-                        "locationId": real_location_id
-                    }]
-                else:
-                    # 如果没有库位信息，也添加一个空的select_LOCATION_OPTIONS
-                    return
+        """为提交准备详情数据（返回**深拷贝**，不污染 transfer_detail_cache）。
+
+        严格对齐 Web inboundDialog（_inboundDialog_beauty.txt L193-407）
+        + 17 份 transferIn HAR 提交实证（117 行明细）：
+
+        ① 未改库位的行 → select_LOCATION_OPTIONS = [{locationId, locationNo}]（2 字段）。
+           locationId/locationNo 回退链同 Web initPage：
+             locationId = realInboundLocationNoId || inboundLocationId
+             locationNo = realInboundLocationNo   || inboundLocation
+        ② 改过库位的行 → 保留 on_location_change 写入的**单个 6 字段对象**
+           （enabledStatus / isValid / locationId / locationNo / locationType / warehouseId），
+           仅补全缺失的 locationNo/locationId，不降级为 2 字段。
+           HAR 实证：SLO 恒为「单元素列表」——2 字段 65 行（未改位）+ 6 字段 52 行（改位），无 len>1。
+        ③ select_locationOptionLoading 是「该行库位框被搜索/改动过」的孪生标记
+           （Web 用 $set 挂行；改位行 52/52 带该键，未改位行 65/65 无该键）。
+           **原样保留、不添加也不剥离**——未触碰的行天然没有这个键。
+        ④ 拆行（splitRow=10041001，Web splitRow 是 13 字段白名单构造）：
+           - 拆行子行保留 splitRow=10041001；普通行/主行删除 splitRow（避免后端误判）
+           - 未被用户填过库位的拆行子行 → **整键不发** select_LOCATION_OPTIONS
+             （Web 子行白名单里没有该键，只有用户在库位框搜索过才会被写入）
+        ⑤ 仅前端内部字段（_isSplit）提交前剥离。
+        """
+        # 深拷贝：提交不改动缓存（否则重复提交会残留上轮的 SLO/splitRow 归一结果）
+        prepared = deepcopy(detail_data)
+        for item in prepared:
+            # ---- 拆行标记归一（幂等：splitRow 是持久标记，重复调用结果一致）----
+            is_split = (item.get("_isSplit") is True
+                        or item.get("splitRow") in (10041001, "10041001"))
+            item.pop("_isSplit", None)
+            if is_split:
+                item["splitRow"] = 10041001
             else:
-                # 如果select_LOCATION_OPTIONS字段已存在，确保其包含locationNo和id字段
-                if "locationNo" not in item["select_LOCATION_OPTIONS"][0]:
-                    item["select_LOCATION_OPTIONS"][0]["locationNo"] = item.get("realInboundLocationNo")
-                if "locationId" not in item["select_LOCATION_OPTIONS"][0]:
-                    item["select_LOCATION_OPTIONS"][0]["locationId"] = item.get("realInboundLocationNoId")
-            # select_locationOptionLoading字段只在库位改变时才有，所以这里不添加
-        
-        return detail_data
+                item.pop("splitRow", None)
+
+            real_location = item.get("realInboundLocationNo") or item.get("inboundLocation") or ""
+            real_location_id = item.get("realInboundLocationNoId") or item.get("inboundLocationId")
+
+            existing = item.get("select_LOCATION_OPTIONS")
+            if existing:
+                # 已存在（多为②的用户搜索 6 字段结果）：只补全缺失的 locationNo/locationId，
+                # 完整对象原样沿用（Web changeStorg 只反查写回 realInboundLocationNo，不改写 SLO）
+                entry = existing[0] if isinstance(existing, list) and existing else None
+                if isinstance(entry, dict):
+                    if not entry.get("locationNo"):
+                        entry["locationNo"] = real_location
+                    if entry.get("locationId") is None:
+                        entry["locationId"] = real_location_id
+                else:
+                    item["select_LOCATION_OPTIONS"] = [{
+                        "locationId": real_location_id,
+                        "locationNo": real_location,
+                    }]
+            elif is_split and not real_location and not real_location_id:
+                # 拆行子行且未被填库位 → 整键不发（对齐 Web 白名单构造）
+                item.pop("select_LOCATION_OPTIONS", None)
+            else:
+                # 未改位的行（或未触碰的普通行）：注入 2 字段
+                # ⚠️ 库位为空时**不可提前 return**（旧实现如此，会导致后续行全部漏处理，整单明细残缺）
+                item["select_LOCATION_OPTIONS"] = [{
+                    "locationId": real_location_id,
+                    "locationNo": real_location,
+                }]
+        return prepared
+
+    # ------------------------------------------------------------------
+    # 拆行 / 合并（对齐 Web inboundDialog splitRow + 安卓端 splitRow / mergeSplitRow）
+    # ------------------------------------------------------------------
+    def _selected_detail_index(self):
+        """返回详情树当前选中行在缓存中的索引；无选中返回 None。"""
+        sel = self.transfer_detail_tree.selection()
+        if not sel:
+            foc = self.transfer_detail_tree.focus()
+            sel = (foc,) if foc else ()
+        if not sel:
+            return None
+        try:
+            return self.detail_item_ids.index(sel[0])
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _is_split_row(row):
+        """判断明细行是否为拆行子行（与 Web/安卓端同款标记）"""
+        return (row.get("_isSplit") is True
+                or row.get("splitRow") in (10041001, "10041001"))
+
+    def _rerender_detail(self):
+        """按缓存重绘明细树（拆行/合并后调用），保持编辑控件、汇总与拆行标记同步。"""
+        tid = getattr(self, "_detail_transfer_id", None)
+        if tid is None or tid not in self.transfer_detail_cache:
+            return
+        self.display_detail_data(
+            self.transfer_detail_cache[tid],
+            getattr(self, "_detail_log_data", None),
+            getattr(self, "_detail_status", ""),
+            tid,
+        )
+
+    def split_detail_row(self):
+        """拆行：把选中明细行拆成两行（共享 detailId），便于分批次 / 多库位入库。
+
+        严格对齐 Web inboundDialog splitRow（_inboundDialog_beauty.txt L383-407）：
+        子行是 **13 字段白名单构造**，不是 {...row} 全量克隆：
+          detailId / brand / brandId / brandName / partId / partCode / partName /
+          shelfLocationNo / waitInboundQty / pickingLocationNo /
+          salesPrice / priceIncreaseRate / splitRow:10041001
+        子行 **不含** 实际入库库位(Id) / 入库数量 / select_LOCATION_OPTIONS / select_locationOptionLoading /
+          inboundLocation(Id) / outboundLocation(Id) / outboundQuantity / transferQuantity /
+          moveWarehouseId / removeWarehouseId / remarks —— 即「干净空行」，
+        库位与数量必须由用户另填（Web 同理；若克隆父行会让未触碰的子行也被判成改位行而发 6 字段）。
+        触发条件对齐 Web 按钮 disabled: row.waitInboundQty < 2。
+        """
+        if getattr(self, "_detail_status", "") != "待上架":
+            messagebox.showwarning("警告", "只有状态为'待上架'的调拨单才能拆行")
+            return
+        tid = getattr(self, "_detail_transfer_id", None)
+        idx = self._selected_detail_index()
+        if tid is None or tid not in self.transfer_detail_cache or idx is None:
+            messagebox.showwarning("警告", "请先在上方明细中选中要拆行的记录")
+            return
+        rows = self.transfer_detail_cache[tid]
+        if not (0 <= idx < len(rows)):
+            return
+        parent = rows[idx]
+        detail_id = parent.get("detailId")
+        wait = int(parent.get("waitInboundQty") or 0)
+        if wait < 2:
+            messagebox.showwarning("警告", "待入库数量小于 2，无需拆行")
+            return
+        used = sum(int(r.get("inboundQuantity") or 0)
+                   for r in rows if r.get("detailId") == detail_id)
+        if wait - used < 1:
+            messagebox.showwarning(
+                "警告",
+                f"「{parent.get('partCode') or '该产品'}」可分配数量已用完"
+                f"（待入库 {wait}，已分配 {used}），无法拆行")
+            return
+
+        child = {
+            # ===== Web splitRow 13 字段白名单 =====
+            "detailId": detail_id,
+            "brand": parent.get("brand"),
+            "brandId": parent.get("brandId"),
+            "brandName": parent.get("brandName"),
+            "partId": parent.get("partId"),
+            "partCode": parent.get("partCode"),
+            "partName": parent.get("partName"),
+            "shelfLocationNo": parent.get("shelfLocationNo"),
+            "waitInboundQty": parent.get("waitInboundQty"),
+            "pickingLocationNo": parent.get("pickingLocationNo"),
+            "salesPrice": parent.get("salesPrice"),
+            "priceIncreaseRate": parent.get("priceIncreaseRate"),
+            "splitRow": 10041001,
+            # ===== 仅前端内部标记，提交前由 prepare_detail_data_for_submission 剥离 =====
+            "_isSplit": True,
+        }
+        rows.insert(idx + 1, child)
+        self._rerender_detail()
+        # 选中新拆出的子行，便于直接填库位/数量
+        try:
+            if idx + 1 < len(self.detail_item_ids):
+                iid = self.detail_item_ids[idx + 1]
+                self.transfer_detail_tree.selection_set(iid)
+                self.transfer_detail_tree.see(iid)
+        except tk.TclError:
+            pass
+
+    def merge_detail_row(self):
+        """合并：把选中的拆行子行数量并回主行后移除该子行（对齐安卓端 mergeSplitRow）。"""
+        if getattr(self, "_detail_status", "") != "待上架":
+            messagebox.showwarning("警告", "只有状态为'待上架'的调拨单才能合并")
+            return
+        tid = getattr(self, "_detail_transfer_id", None)
+        idx = self._selected_detail_index()
+        if tid is None or tid not in self.transfer_detail_cache or idx is None:
+            messagebox.showwarning("警告", "请先在上方明细中选中要合并的拆行记录")
+            return
+        rows = self.transfer_detail_cache[tid]
+        if not (0 <= idx < len(rows)):
+            return
+        row = rows[idx]
+        if not self._is_split_row(row):
+            messagebox.showwarning("警告", "选中的明细不是拆行子行，无需合并")
+            return
+
+        detail_id = row.get("detailId")
+        main_idx = next((i for i, r in enumerate(rows)
+                         if r.get("detailId") == detail_id and not self._is_split_row(r)), None)
+        qty = int(row.get("inboundQuantity") or 0)
+        if main_idx is not None and qty:
+            main = rows[main_idx]
+            others = sum(int(r.get("inboundQuantity") or 0)
+                         for i, r in enumerate(rows)
+                         if i not in (main_idx, idx) and r.get("detailId") == detail_id)
+            max_for_main = max(0, int(main.get("waitInboundQty") or 0) - others)
+            main["inboundQuantity"] = min(int(main.get("inboundQuantity") or 0) + qty, max_for_main)
+            # 合并行本身的库位不回填主行：Web/安卓端合并仅并数量，库位由用户自行处理
+        rows.pop(idx)
+        self._rerender_detail()
+
+    def validate_detail_groups(self, transfer_id=None):
+        """提交前整体校验：同一 detailId 组（含拆行）入库数量合计不得超过 waitInboundQty。
+
+        返回错误描述字符串；无错误返回 ''（对齐安卓端 validateAllGroups）。
+        拆行后多行共享 detailId，必须以「组」为单位校验，单行校验会漏判总量超发。
+        transfer_id 缺省取当前明细上下文（_detail_transfer_id）。
+        """
+        tid = transfer_id if transfer_id is not None else getattr(self, "_detail_transfer_id", None)
+        if tid is None or tid not in self.transfer_detail_cache:
+            return ""
+        rows = self.transfer_detail_cache[tid]
+        seen = set()
+        for r in rows:
+            gid = r.get("detailId")
+            if gid in seen:
+                continue
+            seen.add(gid)
+            group = [x for x in rows if x.get("detailId") == gid]
+            total = sum(int(x.get("inboundQuantity") or 0) for x in group)
+            wait = int(group[0].get("waitInboundQty") or 0)
+            if total > wait:
+                return (f"「{group[0].get('partCode') or '该产品'}」"
+                        f"入库数量合计 {total} 超过待入库 {wait}")
+        return ""
+
+    def has_valid_inbound_row(self, transfer_id=None):
+        """Web/安卓端同款闸门：至少一行填了实际入库库位 且 入库数量不为 0。
+
+        Web tempStorage / infoSave 共用该校验（_inboundDialog_beauty.txt L438 / L492）：
+          detailDtoList.some(l => l.realInboundLocationNoId != null && l.inboundQuantity != null && l.inboundQuantity != 0)
+        transfer_id 缺省取当前明细上下文（_detail_transfer_id）。
+        """
+        tid = transfer_id if transfer_id is not None else getattr(self, "_detail_transfer_id", None)
+        if tid is None or tid not in self.transfer_detail_cache:
+            return False
+        for r in self.transfer_detail_cache[tid]:
+            # 与 prepare 同款回退链（Web initPage 载入时已做 realInboundLocationNoId ||= inboundLocationId）
+            loc_id = r.get("realInboundLocationNoId") or r.get("inboundLocationId")
+            qty = r.get("inboundQuantity")
+            if loc_id is not None and qty is not None and int(qty or 0) != 0:
+                return True
+        return False
+
+
+    def record_field(self, transfer_id, key, default=""):
+        """按调拨单 id 从查询数据中取字段原值（不做文本转换，None 归一为 default）。
+
+        用于提交报文取值：transferType 须为原始数字、remark 为单头备注，
+        均来自 /warehouse/transferIn/application 返回的列表行。
+        """
+        for record in self.original_data:
+            if str(record.get("id", "")) == str(transfer_id):
+                value = record.get(key, default)
+                return default if value is None else value
+        return default
 # ... existing code ...
     def temp_storage(self):
         """暂存功能"""
@@ -2645,9 +2947,20 @@ class TransferProcessPage(BasePage):
         if transfer_id not in self.transfer_detail_cache:
             messagebox.showwarning("警告", "未找到调拨单详情数据")
             return
-            
+
+        # 提交前闸门（对齐 Web tempStorage / 安卓端 doTempStorage）：
+        # ① 拆行组内数量合计不得超过待入库（同 detailId 多行共享一个 waitInboundQty）
+        group_err = self.validate_detail_groups(transfer_id)
+        if group_err:
+            messagebox.showwarning("警告", group_err)
+            return
+        # ② 至少一行填了实际入库库位 + 数量不为 0
+        if not self.has_valid_inbound_row(transfer_id):
+            messagebox.showwarning("警告", "请至少填写一条实际入库库位与入库数量")
+            return
+
         detail_data = self.transfer_detail_cache[transfer_id]
-        # 准备详情数据，确保所有必要字段都存在
+        # 准备详情数据（返回深拷贝，不动缓存）
         detail_data = self.prepare_detail_data_for_submission(detail_data)
         
         # 获取乐观锁 recordVersion（取自查询数据中对应记录的 recordVersion 字段）
@@ -2666,30 +2979,20 @@ class TransferProcessPage(BasePage):
             "recordVersion": record_version,
             "removeWarehouseId": removewarehouse_id,
             "transferNo": transfer_no,
-            "transferType": transfer_type,
+            # 调拨类型优先用列表行原始数字（对齐 Web initPage 的 a.transferType 直传）；
+            # 缺失才回退到界面文本反查映射
+            "transferType": self.record_field(transfer_id, "_transferTypeRaw") or transfer_type,
+            # ⚠️ 刻意不传 remark：Web 端 tempStorage 报文**不含**该键（8 份 HAR 实证，4/4 均无；
+            #    同一单据 id 7419/7479/14934 的对照：暂存无、入库有）。单头备注只由入库接口写入，
+            #    暂存侧带上反而有把备注误清空的风险（PC 端取不到值时归一为 ""，而 Web 是根本不发该键）。
             "checkStatus": 10041001,
             "detailDtoList": detail_data
         }
         
-        # 发送POST请求
+        # 发送POST请求（后台线程，避免阻塞界面）
         url = "https://xb.fy-carg.com/dmscloud.part/warehouse/transferIn/tempStorage"
-        try:
-            #response = self.controller.session.post(url, headers=HEADERS, data=json.dumps(post_data))
-            print(json.dumps(post_data,indent=4,ensure_ascii=False,sort_keys=True))
-            # # 检查登录状态
-            # if not self._check_response(response):
-            #     return
-                
-            # if response.status_code == 200:
-            #     result = response.json()
-            #     if result.get("success"):
-            #         messagebox.showinfo("成功", "暂存成功")
-            #     else:
-            #         messagebox.showerror("失败", f"暂存失败: {result.get('message', '未知错误')}")
-            # else:
-            #     messagebox.showerror("错误", f"请求失败，状态码: {response.status_code}")
-        except Exception as e:
-            messagebox.showerror("错误", f"请求异常: {str(e)}")
+        threading.Thread(target=self._submit_in_thread,
+                         args=(url, post_data, "暂存"), daemon=True).start()
 # ... existing code ...
 # ... existing code ...
     def transfer_in(self):
@@ -2746,24 +3049,36 @@ class TransferProcessPage(BasePage):
             messagebox.showwarning("警告", "未找到调拨单详情数据")
             return
             
-        detail_data = self.transfer_detail_cache[transfer_id]
-
-        # 检查实际入库库位是否为空
-        empty_location_items = []
-        for i, item in enumerate(detail_data):
-            real_inbound_location = item.get("realInboundLocationNo", "") or item.get("inboundLocationNo", "")
-            if not real_inbound_location:
-                # 获取产品信息用于提示
-                part_code = item.get("partCode", f"第{i+1}项")
-                part_name = item.get("partName", "")
-                empty_location_items.append(f"{part_code} {part_name}")
-        
-        if empty_location_items:
-            messagebox.showwarning("警告", f"以下产品的实际入库库位为空，不能执行暂存操作：\n" + "\n".join(empty_location_items))
+        # 提交前闸门（严格对齐 Web infoSave / 安卓端 doTransferIn）：
+        # ⚠️ 旧实现要求「每一行都必须有实际入库库位」，比 Web/安卓端更严，会让拆行拆出的
+        #    未分配子行（干净空行）无法提交；此处改为 Web/安卓端同款三条规则。
+        rows_now = self.transfer_detail_cache[transfer_id]
+        # ① 拆行组内数量合计不得超过待入库（同 detailId 多行共享一个 waitInboundQty）
+        group_err = self.validate_detail_groups(transfer_id)
+        if group_err:
+            messagebox.showwarning("警告", group_err)
+            return
+        # ② 至少一行填了实际入库库位 + 数量不为 0，避免空提交
+        if not self.has_valid_inbound_row(transfer_id):
+            messagebox.showwarning("警告", "请至少填写一条实际入库库位与入库数量")
+            return
+        # ③ 填了数量但库位为空的行 → 阻断（有数量必须有库位）
+        missing_loc_rows = [
+            f"{r.get('partCode', '')} {r.get('partName', '')}".strip()
+            for r in rows_now
+            if int(r.get("inboundQuantity") or 0) > 0
+            and not (r.get("realInboundLocationNo") or r.get("inboundLocation"))
+        ]
+        if missing_loc_rows:
+            head = missing_loc_rows[:10]
+            more = "" if len(missing_loc_rows) <= 10 else f"\n…等共 {len(missing_loc_rows)} 项"
+            messagebox.showwarning(
+                "警告",
+                "以下产品已填入库数量但库位为空，不能执行入库：\n" + "\n".join(head) + more)
             return
 
-        # 准备详情数据，确保所有必要字段都存在
-        detail_data = self.prepare_detail_data_for_submission(detail_data)
+        # 准备详情数据（返回深拷贝，不动缓存）
+        detail_data = self.prepare_detail_data_for_submission(rows_now)
         
         # 获取乐观锁 recordVersion（取自查询数据中对应记录的 recordVersion 字段）
         record_version = ""
@@ -2781,32 +3096,61 @@ class TransferProcessPage(BasePage):
             "recordVersion": record_version,
             "removeWarehouseId": removewarehouse_id,
             "transferNo": transfer_no,
-            "transferType": transfer_type,
+            # 调拨类型优先用列表行原始数字（对齐 Web initPage 的 a.transferType 直传）；
+            # 缺失才回退到界面文本反查映射
+            "transferType": self.record_field(transfer_id, "_transferTypeRaw") or transfer_type,
+            # 单头备注：对齐 Web infoSave 的 remark: this.addForm.remark（= 列表行 remark）。
+            # Web 取不到值时发 null，故 default=None 保留 null 语义（勿归一为 ""）。
+            # 暂存(tempStorage)侧则完全不发该键 —— 见 temp_storage 内注释。
+            "remark": self.record_field(transfer_id, "remark", None),
             "checkStatus": 10041001,
             "detailDtoList": detail_data
         }
         
-        # 发送POST请求
+        # 发送POST请求（后台线程，避免阻塞界面）
         url = "https://xb.fy-carg.com/dmscloud.part/warehouse/transferIn/transferInbound"
+        threading.Thread(target=self._submit_in_thread,
+                         args=(url, post_data, "入库"), daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # 暂存 / 入库 提交（共用）
+    # ------------------------------------------------------------------
+    def _submit_in_thread(self, url, post_data, action):
+        """后台线程提交暂存/入库报文，完成后经 controller.after 回到主线程收尾。
+
+        对齐其它模块（如 batch_sign_transfers）的响应判定：
+        HTTP 200 且 resultCode == 200 且 success 为真才算成功。
+        """
         try:
-            #response = self.controller.session.post(url, headers=HEADERS, data=json.dumps(post_data))
-            print(json.dumps(post_data,indent=4,ensure_ascii=False,sort_keys=True))
-            # # 检查登录状态
-            # if not self._check_response(response):
-            #     return
-                
-            # if response.status_code == 200:
-            #     result = response.json()
-            #     if result.get("success"):
-            #         messagebox.showinfo("成功", "入库成功")
-            #         # 刷新数据
-            #         self.transfer_query()
-            #     else:
-            #         messagebox.showerror("失败", f"入库失败: {result.get('message', '未知错误')}")
-            # else:
-            #     messagebox.showerror("错误", f"请求失败，状态码: {response.status_code}")
+            print(f"[调拨入库-{action}] POST {url}\n" +
+                  json.dumps(post_data, indent=4, ensure_ascii=False, sort_keys=True))
+            response = self.controller.session.post(url, headers=HEADERS, data=json.dumps(post_data))
+
+            # 检查登录状态（会话失效时 _check_response 内部已弹提示）
+            if not self._check_response(response):
+                self.controller.after(0, lambda: messagebox.showerror(
+                    f"{action}失败", "登录状态已失效，请重新登录"))
+                return
+
+            response.raise_for_status()
+            result = response.json()
+            if result.get('resultCode') == 200 and result.get('success'):
+                msg = result.get('message') or result.get('msg') or f"{action}成功"
+                self.controller.after(0, lambda m=msg: self._submit_complete(action, True, m))
+            else:
+                err = result.get('errMsg') or result.get('message') or result.get('msg') or "未知错误"
+                self.controller.after(0, lambda e=err: self._submit_complete(action, False, e))
         except Exception as e:
-            messagebox.showerror("错误", f"请求异常: {str(e)}")
+            err = str(e)
+            self.controller.after(0, lambda e=err: self._submit_complete(action, False, e))
+
+    def _submit_complete(self, action, ok, message):
+        """暂存/入库 完成后的主线程收尾：提示 + 刷新列表"""
+        if ok:
+            messagebox.showinfo("成功", message or f"{action}成功")
+            self.transfer_query()          # 重新查询列表（内部会清理详情视图与编辑控件）
+        else:
+            messagebox.showerror(f"{action}失败", message or "未知错误")
 # ... existing code ...
     # 4. 添加批量签收UI函数
     def batch_sign_transfers_ui(self):

@@ -1,22 +1,48 @@
-name: Build & Release
+# =============================================================================
+# Release — 自动发版流水线（参考 fycarg-pda/.github/workflows/release.yml）
+# push main / 手动触发 → 自动版本自增 → 构建 exe → 打 tag → 发布 GitHub Release
+#
+# 与 fycarg-pda 的差异：本项目**没有独立分发仓库**，Release 与 tag 直接落在
+# changzhigong/FY-CARG-PC 自身；版本唯一来源是仓库根 VERSION 文件
+# （scripts/bump_version.py 从本仓库 latest release 计算下一个版本号）。
+#
+# 防死循环：自增提交带 [auto-version]，job 级 if 跳过 [auto-version]/[skip ci] 提交。
+# =============================================================================
+
+name: Release
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      bump:
+        description: '版本自增级别'
+        required: false
+        default: 'patch'
+        type: choice
+        options: [patch, minor, major]
 
-permissions:
-  contents: write
+defaults:
+  run:
+    shell: bash
 
 jobs:
   release:
+    name: Bump & Build & Release
     runs-on: windows-latest
+    timeout-minutes: 40
+    if: |
+      !contains(github.event.head_commit.message, '[auto-version]') &&
+      !contains(github.event.head_commit.message, '[skip ci]')
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
       - name: Setup Python
@@ -30,86 +56,114 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
+      # ─── 自动版本自增（来源：本仓库 latest release → git tag → VERSION）───
+      - name: Bump version
+        id: bump
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LEVEL="${{ github.event.inputs.bump || 'patch' }}"
+          python scripts/bump_version.py --bump "$LEVEL"
+
       - name: Read version
         id: version
-        shell: bash
         run: |
-          BASE_VERSION=$(cat VERSION | tr -d '\r\n ')
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          RUN_NUM=${{ github.run_number }}
-          TAG="v${BASE_VERSION}"
-          echo "base_version=${BASE_VERSION}" >> $GITHUB_OUTPUT
-          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "run_num=${RUN_NUM}" >> $GITHUB_OUTPUT
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "app_name=FY-CARG-PC-v${BASE_VERSION}" >> $GITHUB_OUTPUT
+          NEW="${{ steps.bump.outputs.new }}"
+          echo "new=${NEW}" >> $GITHUB_OUTPUT
+          echo "old=${{ steps.bump.outputs.old }}" >> $GITHUB_OUTPUT
+          echo "tag=v${NEW}" >> $GITHUB_OUTPUT
+          echo "app_name=FY-CARG-PC-v${NEW}" >> $GITHUB_OUTPUT
+          echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
+      # ─── 构建（VERSION / BUILD_DATE 打进产物，供「关于软件」与检查更新读取）───
       - name: Build with PyInstaller
         run: |
-          pyinstaller `
-            --onefile `
-            --windowed `
-            --log-level WARN `
-            --add-data "VERSION;." `
-            --hidden-import win32com `
-            --hidden-import win32com.client `
-            --hidden-import pythoncom `
-            --hidden-import babel.numbers `
-            --hidden-import babel.core `
-            --hidden-import tkcalendar `
-            --hidden-import PIL._tkinter_finder `
-            --collect-submodules openpyxl `
-            --collect-submodules cryptography `
-            --collect-all babel `
-            --hidden-import tkinterweb `
-            --collect-submodules tkinterweb `
-            --name "${{ steps.version.outputs.app_name }}" `
+          pyinstaller \
+            --onefile \
+            --windowed \
+            --log-level WARN \
+            --add-data "VERSION;." \
+            --add-data "BUILD_DATE;." \
+            --hidden-import win32com \
+            --hidden-import win32com.client \
+            --hidden-import pythoncom \
+            --hidden-import babel.numbers \
+            --hidden-import babel.core \
+            --hidden-import tkcalendar \
+            --hidden-import PIL._tkinter_finder \
+            --collect-submodules openpyxl \
+            --collect-submodules cryptography \
+            --collect-all babel \
+            --hidden-import tkinterweb \
+            --collect-submodules tkinterweb \
+            --name "${{ steps.version.outputs.app_name }}" \
             main.py
 
-      - name: Delete old tag (if exists)
-        shell: bash
+      - name: Collect artifact
+        id: artifact
         run: |
-          git push origin --delete ${{ steps.version.outputs.tag }} 2>/dev/null || true
+          EXE="dist/${{ steps.version.outputs.app_name }}.exe"
+          [ -f "$EXE" ] || { echo "未找到产物 $EXE"; ls -la dist/; exit 1; }
+          echo "path=$EXE" >> $GITHUB_OUTPUT
+          echo "name=$(basename "$EXE")" >> $GITHUB_OUTPUT
+          echo "size=$(ls -lh "$EXE" | awk '{print $5}')" >> $GITHUB_OUTPUT
 
-      - name: Force-create tag
-        shell: bash
+      # ─── 提交自增后的版本文件并打 tag（提交信息带 [auto-version] 防重入）───
+      - name: Commit & Tag
         run: |
-          git tag -f ${{ steps.version.outputs.tag }}
-          git push origin ${{ steps.version.outputs.tag }} -f
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          V="${{ steps.version.outputs.tag }}"
+          git add VERSION BUILD_DATE
+          # 无变更时不提交（避免流水线因空提交失败）
+          if git diff --staged --quiet; then
+            echo "版本文件无变更，跳过提交"
+          else
+            git commit -m "[auto-version] $V"
+            git push origin main
+          fi
+          # tag 已存在则跳过，否则打 tag 并推送
+          if git rev-parse "$V" >/dev/null 2>&1; then
+            echo "tag $V 已存在，跳过"
+          else
+            git tag "$V"
+            git push origin "$V"
+          fi
 
-      - name: Generate release notes
-        shell: bash
-        run: |
-          cat > release_notes.md << EOF
-          ## 构建信息
-
-          | 项目 | 值 |
-          |------|-----|
-          | 版本 | ${{ steps.version.outputs.tag }} |
-          | 构建编号 | #${{ steps.version.outputs.run_num }} |
-          | 提交 | [${{ steps.version.outputs.short_sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) |
-          | 分支 | ${{ github.ref_name }} |
-          | 触发时间 | $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S') |
-
-          ## 变更
-
-          EOF
-
-          git log -5 --pretty=format:'- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))' >> release_notes.md
-          echo '' >> release_notes.md
-          echo '' >> release_notes.md
-          echo '---' >> release_notes.md
-          echo '> 每次推送到 `main` 分支时自动构建并更新此 Release。' >> release_notes.md
-
-      - name: Create/Update Release
+      # ─── 发布 Release（本仓库即分发仓库，公开可匿名下载）───
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: FY-CARG-PC ${{ steps.version.outputs.tag }}
-          body_path: release_notes.md
-          files: |
-            dist/${{ steps.version.outputs.app_name }}.exe
+          body: |
+            ## FY-CARG-PC ${{ steps.version.outputs.tag }}
+
+            自动发版：从 v${{ steps.version.outputs.old }} 自增（${{ github.event.inputs.bump || 'patch' }}）。
+
+            | 项目 | 值 |
+            |------|-----|
+            | 版本 | `${{ steps.version.outputs.tag }}` |
+            | 构建编号 | #${{ github.run_number }} |
+            | 提交 | [${{ steps.version.outputs.short_sha }}](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) |
+            | 产物 | `${{ steps.artifact.outputs.name }}` (${{ steps.artifact.outputs.size }}) |
+            | 触发 | `${{ github.event.head_commit.message }}` |
+          draft: false
           prerelease: false
           make_latest: true
+          files: dist/*.exe
+          fail_on_unmatched_files: false
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Release ${{ steps.version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 项目 | 值 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| 旧版本 | \`v${{ steps.version.outputs.old }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 新版本 | \`${{ steps.version.outputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| 产物 | \`${{ steps.artifact.outputs.name }}\` (${{ steps.artifact.outputs.size }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Release | [查看](https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.tag }}) |" >> $GITHUB_STEP_SUMMARY
