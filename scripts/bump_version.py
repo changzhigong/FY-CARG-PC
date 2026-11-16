@@ -24,6 +24,12 @@ import subprocess
 import sys
 from datetime import date
 
+# Windows runner 默认 stdout 编码为 cp1252，print 中文会抛 UnicodeEncodeError
+# （2026-11-16 首次发版实测失败点）。强制 UTF-8，确保 CI 日志中文正常输出。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, 'reconfigure'):
+        _stream.reconfigure(encoding='utf-8')
+
 VERSION_FILE = 'VERSION'
 BUILD_DATE_FILE = 'BUILD_DATE'
 DEFAULT_REPO = 'changzhigong/FY-CARG-PC'

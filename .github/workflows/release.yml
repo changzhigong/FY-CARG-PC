@@ -61,6 +61,8 @@ jobs:
         id: bump
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Windows runner 默认 cp1252，脚本内 print 中文需要 UTF-8 输出
+          PYTHONIOENCODING: utf-8
         run: |
           LEVEL="${{ github.event.inputs.bump || 'patch' }}"
           python scripts/bump_version.py --bump "$LEVEL"
