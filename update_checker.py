@@ -127,7 +127,8 @@ def fetch_latest_release(url=None):
 
     返回 dict：
       tagName / version（去 v 前缀）/ body / htmlUrl / publishedAt /
-      assetUrl（安装包下载直链，无则 ''）
+      assetUrl（安装包下载直链，无则 ''）/ assetName（安装包文件名）/ assetSize（字节数）
+    assetName/assetSize 供应用内下载器命名文件与显示进度（见 update_downloader.py）。
     请求失败抛 requests 异常（由 check_for_update 兜底）。
     """
     headers = {
@@ -149,7 +150,9 @@ def fetch_latest_release(url=None):
         'body': data.get('body') or '',
         'htmlUrl': data.get('html_url') or '',
         'publishedAt': data.get('published_at') or '',
-        'assetUrl': asset.get('browser_download_url') or '' if asset else '',
+        'assetUrl': (asset.get('browser_download_url') or '') if asset else '',
+        'assetName': (asset.get('name') or '') if asset else '',
+        'assetSize': (asset.get('size') or 0) if asset else 0,
     }
 
 

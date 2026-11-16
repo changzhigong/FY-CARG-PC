@@ -5,12 +5,15 @@
 - 关于软件：应用名 / 副标题 / 版本号 / 单位 / 联系方式 / 版权
 - 检查更新：当前版本 + 「检查更新」按钮；发现新版本时展示版本号、更新内容与下载按钮。
   更新逻辑与安卓同款（GitHub Releases API，见 update_checker.py），仅发布仓库与安装包资产不同。
+  下载在软件内完成（见 update_downloader.py）：桌面落地、断点续传、进度/取消，
+  不调用系统浏览器；UI 更新一律 controller.after(0, ...) 回主线程。
 - 使用帮助：按桌面端实际菜单（快捷操作 / 仓库理货 / 库内作业 / 仓储查询 / 报销管理 /
   内部领用 / 其他出入库管理 / 采购入库 / 打印）整理的可折叠条目。
 
 本页无登录会话依赖；检查更新走公开 GitHub API（不用 dms 会话/Header）。
 """
 
+import os
 import threading
 import webbrowser
 
@@ -23,6 +26,8 @@ from app_version import (APP_NAME, APP_SUBTITLE, APP_VERSION, APP_BUILD_DATE,
                          APP_COPYRIGHT, get_version_string)
 from update_checker import (clear_update_cache, check_for_update,
                             _load_config_repo)
+from update_downloader import (default_download_dir, safe_filename,
+                               download_file, launch_installer, reveal_in_folder)
 
 # 使用帮助条目：(标题, [段落…])  —— 对齐桌面端已上线的菜单集合
 HELP_SECTIONS = [
@@ -98,6 +103,8 @@ class HelpCenterPage(BasePage):
         self.has_update = False
         self.release_info = None
         self.latest_version = ''
+        self.downloading = False
+        self.download_cancel = None   # threading.Event，置位取消下载
         self._help_expanded = {}   # 条目名 -> bool
         super().__init__(parent, controller)
 
@@ -185,7 +192,7 @@ class HelpCenterPage(BasePage):
             w.destroy()
 
     def do_check_update(self):
-        if self.checking:
+        if self.checking or self.downloading:
             return
         self.checking = True
         self.check_btn.config(text="检查中…", state=tk.DISABLED)
@@ -216,6 +223,7 @@ class HelpCenterPage(BasePage):
             messagebox.showinfo("检查更新", "已是最新版本")
             return
         release = result.get('releaseInfo') or {}
+        self.release_info = release
         self.latest_version = result.get('latestVersion') or ''
         self._clear_result()
         box = tk.Frame(self.result_frame, bg="#ecf5ff")
@@ -232,11 +240,20 @@ class HelpCenterPage(BasePage):
         line.pack(fill=tk.X, padx=8, pady=(4, 6))
         asset_url = release.get('assetUrl') or ''
         if asset_url:
-            tk.Button(line, text="下载并安装最新版本", bg="#ee0a24", fg="white",
-                      bd=0, padx=12, pady=3,
-                      command=lambda: self.open_release(release)).pack(side=tk.LEFT)
-            tk.Label(line, text="将使用系统浏览器下载 Windows 安装包",
-                     bg="#ecf5ff", fg="#969799", font=("微软雅黑", 8)).pack(side=tk.LEFT, padx=8)
+            self.download_btn = tk.Button(line, text="下载并安装最新版本", bg="#ee0a24", fg="white",
+                                          bd=0, padx=12, pady=3,
+                                          command=lambda: self.start_download(release))
+            self.download_btn.pack(side=tk.LEFT)
+            size_mb = (release.get('assetSize') or 0) / 1024.0 / 1024.0
+            hint = '软件内直接下载到桌面，支持断点续传'
+            if size_mb >= 0.1:
+                hint += '（约 {:.1f} MB）'.format(size_mb)
+            tk.Label(line, text=hint, bg="#ecf5ff", fg="#969799",
+                     font=("微软雅黑", 8)).pack(side=tk.LEFT, padx=8)
+            # 备用入口：无内置下载器能力时仍可从浏览器 manual 下载
+            tk.Button(line, text="用浏览器下载", bg="#ecf5ff", fg="#1989fa",
+                      bd=0, font=("微软雅黑", 8),
+                      command=lambda: self.open_release(release)).pack(side=tk.RIGHT)
         else:
             tk.Button(line, text="前往 GitHub 发布页", bg="#ee0a24", fg="white",
                       bd=0, padx=12, pady=3,
@@ -244,17 +261,153 @@ class HelpCenterPage(BasePage):
             tk.Label(line, text="该版本暂未附带 Windows 安装包资产，将打开发布页",
                      bg="#ecf5ff", fg="#969799", font=("微软雅黑", 8)).pack(side=tk.LEFT, padx=8)
 
+        # 下载进度区（动态重建）
+        self.progress_frame = tk.Frame(box, bg="#ecf5ff")
+        self.progress_frame.pack(fill=tk.X, padx=8, pady=(0, 6))
+
+    # ---------------------------------------------- 应用内下载
+    def start_download(self, release):
+        """在软件内下载安装包（后台线程 + 主线程回调 UI）"""
+        if self.downloading:
+            return
+        url = release.get('assetUrl') or ''
+        if not url:
+            messagebox.showinfo("提示", "该版本暂无安装包下载地址")
+            return
+        filename = safe_filename(release.get('assetName'),
+                                 fallback='FY-CARG-PC-v{}.exe'.format(
+                                     (release.get('version') or 'update').lstrip('v')))
+        dest_path = os.path.join(default_download_dir(), filename)
+
+        self.downloading = True
+        self.download_cancel = threading.Event()
+        if getattr(self, 'download_btn', None) is not None:
+            try:
+                self.download_btn.config(state=tk.DISABLED)
+            except tk.TclError:
+                pass
+        self._clear_progress()
+        self._render_progress(dest_path)
+
+        threading.Thread(target=self._download_thread,
+                         args=(url, dest_path, int(release.get('assetSize') or 0)),
+                         daemon=True).start()
+
+    def _clear_progress(self):
+        frame = getattr(self, 'progress_frame', None)
+        if frame is None:
+            return
+        try:
+            for w in frame.winfo_children():
+                w.destroy()
+        except tk.TclError:
+            pass
+
+    def _render_progress(self, dest_path):
+        """在进度区渲染进度条 / 百分比 / 取消按钮"""
+        self._clear_progress()
+        frame = self.progress_frame
+        self.pb_var = tk.DoubleVar(value=0)
+        self.progress_label_var = tk.StringVar(value="准备下载：{}".format(os.path.basename(dest_path)))
+        tk.Label(frame, textvariable=self.progress_label_var, bg="#ecf5ff",
+                 fg="#646566", font=("微软雅黑", 9)).pack(anchor="w", pady=(2, 2))
+        self.pb = ttk.Progressbar(frame, variable=self.pb_var, maximum=100, length=420)
+        self.pb.pack(side=tk.LEFT, pady=(0, 4))
+        self.cancel_btn = tk.Button(frame, text="取消", bg="#ffffff", fg="#646566",
+                                    bd=0, font=("微软雅黑", 9),
+                                    command=self.cancel_download)
+        self.cancel_btn.pack(side=tk.LEFT, padx=8, pady=(0, 4))
+
+    def _on_progress(self, downloaded, total, percent, resumed):
+        """下载线程调用：只发信号，UI 更新切回主线程"""
+        self.controller.after(0, lambda: self._apply_progress(downloaded, total, percent, resumed))
+
+    def _apply_progress(self, downloaded, total, percent, resumed):
+        try:
+            if self.pb_var is not None:
+                self.pb_var.set(percent)
+            tag = '（断点续传）' if resumed else ''
+            if total:
+                self.progress_label_var.set(
+                    "下载中{tag}：{:.1f} / {:.1f} MB  ({:.0f}%)".format(
+                        tag, downloaded / 1048576.0, total / 1048576.0, percent))
+            else:
+                self.progress_label_var.set("下载中{tag}：{:.1f} MB".format(
+                    tag, downloaded / 1048576.0))
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _download_thread(self, url, dest_path, expected_size):
+        try:
+            result = download_file(
+                url, dest_path, expected_size=expected_size,
+                on_progress=self._on_progress, cancel_event=self.download_cancel)
+        except Exception as e:
+            result = {'ok': False, 'error': str(e), 'path': dest_path,
+                      'downloaded': 0, 'total': expected_size}
+        self.controller.after(0, lambda: self._download_done(result))
+
+    def _download_done(self, result):
+        self.downloading = False
+        if getattr(self, 'download_btn', None) is not None:
+            try:
+                self.download_btn.config(state=tk.NORMAL)
+            except tk.TclError:
+                pass
+        path = result.get('path') or ''
+        if result.get('ok'):
+            self._clear_progress()
+            tk.Label(self.progress_frame, text="✓ 已下载到：{}".format(path),
+                     bg="#ecf5ff", fg="#07c160", font=("微软雅黑", 9),
+                     wraplength=760, justify="left").pack(anchor="w")
+            answer = messagebox.askyesno(
+                "下载完成",
+                "安装包已下载到：\n{}\n\n是否立即安装？\n"
+                "（将启动安装程序，安装过程中本程序可关闭）".format(path))
+            if answer:
+                ok, err = launch_installer(path)
+                if not ok:
+                    messagebox.showerror("启动安装失败", err)
+            else:
+                ok, err = reveal_in_folder(path)
+                if not ok:
+                    messagebox.showinfo("提示", "安装包位置：\n{}".format(path))
+        else:
+            err = result.get('error') or '未知错误'
+            if '取消' in err:
+                self._clear_progress()
+                tk.Label(self.progress_frame, text="已取消下载（断点已保留，下次可续传）",
+                         bg="#ecf5ff", fg="#969799", font=("微软雅黑", 9)).pack(anchor="w")
+            else:
+                self._clear_progress()
+                tk.Label(self.progress_frame, text="下载失败：{}".format(err),
+                         bg="#ecf5ff", fg="#ee0a24", font=("微软雅黑", 9),
+                         wraplength=760, justify="left").pack(anchor="w")
+                tk.Button(self.progress_frame, text="重试", bg="#ffffff", fg="#1989fa",
+                          bd=0, font=("微软雅黑", 9),
+                          command=lambda: self.start_download(self.release_info or {})).pack(anchor="w")
+                tk.Button(self.progress_frame, text="用浏览器下载", bg="#ffffff", fg="#969799",
+                          bd=0, font=("微软雅黑", 8),
+                          command=lambda: self.open_release(self.release_info or {})).pack(anchor="w")
+
+    def cancel_download(self):
+        if self.download_cancel is not None:
+            self.download_cancel.set()
+        try:
+            if getattr(self, 'cancel_btn', None) is not None:
+                self.cancel_btn.config(state=tk.DISABLED, text="取消中…")
+        except tk.TclError:
+            pass
+
     def open_release(self, release):
+        """备用入口：用系统浏览器打开发布页或安装包直链"""
         url = release.get('assetUrl') or release.get('htmlUrl') or ''
         if not url:
             messagebox.showinfo("提示", "暂无可用的下载地址")
             return
         try:
             webbrowser.open(url)
-            if release.get('assetUrl'):
-                messagebox.showinfo("已开始下载", "已在浏览器打开安装包下载：\n" + url)
-            else:
-                messagebox.showinfo("已打开", "已在浏览器打开发布页：\n" + url)
+            messagebox.showinfo("已打开", "已在浏览器打开：\n" + url)
         except Exception as e:
             messagebox.showerror("打开失败", str(e))
 
