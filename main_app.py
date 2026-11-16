@@ -858,8 +858,44 @@ class MainApplication:
     #             delattr(self, '_current_panel')
     
     def open_config_page(self):
-        """打开配置页面（带密码验证）"""
-        if not getattr(self, "_config_unlocked", False):
+        """打开配置页面：首次引导设置密码，之后校验密码"""
+        if getattr(self, "_config_unlocked", False):
+            self.show_frame("ConfigPage")
+            return
+
+        try:
+            from config_password import has_password, set_password
+            first_time = not has_password()
+        except Exception as e:
+            print(f"[ConfigPwd] 检查密码状态失败: {e}")
+            first_time = False
+
+        if first_time:
+            # 首次进入：让用户自己设置密码（两次确认），而不是索要一个从未设置的默认密码
+            while True:
+                pwd = simpledialog.askstring(
+                    "首次设置", "配置页面尚未设置密码，请设置一个密码：", show="*")
+                if pwd is None:
+                    return
+                if not str(pwd).strip():
+                    messagebox.showwarning("提示", "密码不能为空，请重新输入")
+                    continue
+                confirm = simpledialog.askstring(
+                    "确认密码", "请再次输入新密码以确认：", show="*")
+                if confirm is None:
+                    return
+                if pwd != confirm:
+                    if not messagebox.askretrycancel("不一致", "两次输入的密码不一致，是否重新设置？"):
+                        return
+                    continue
+                ok, err = set_password(pwd)
+                if not ok:
+                    messagebox.showerror("设置失败", err or "密码保存失败")
+                    return
+                messagebox.showinfo("设置成功", "密码已设置，以后进入配置页需输入此密码。\n可在配置页内修改。")
+                self._config_unlocked = True
+                break
+        else:
             pwd = simpledialog.askstring("安全验证", "请输入配置页面密码：", show="*")
             if pwd is None:
                 return
@@ -867,7 +903,7 @@ class MainApplication:
                 messagebox.showerror("权限错误", "密码不正确，无法进入配置页面")
                 return
             self._config_unlocked = True
-        
+
         self.show_frame("ConfigPage")
 
 

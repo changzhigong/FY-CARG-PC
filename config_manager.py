@@ -80,6 +80,7 @@ class ConfigPage(BasePage):
         ttk.Button(btn_frame, text="载入全局司机电话", command=self.load_driver_data_global).pack(side=tk.LEFT, padx=6)
         ttk.Button(btn_frame, text="保存当前仓库配置", command=self.save_current_warehouse).pack(side=tk.LEFT, padx=6)
         ttk.Button(btn_frame, text="保存全部配置", command=self.save_all_config).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btn_frame, text="修改密码", command=self.change_password).pack(side=tk.LEFT, padx=6)
         ttk.Button(btn_frame, text="锁定配置页", command=self.lock_config_page).pack(side=tk.RIGHT, padx=6)
 
         # 初始加载当前选中的仓库
@@ -189,6 +190,52 @@ class ConfigPage(BasePage):
         # 再次写回（确保 driver_data 覆盖）
         self._write_config_to_file(cfg)
         messagebox.showinfo("成功", "已保存全部配置")
+
+    def change_password(self):
+        """修改配置页密码：校验原密码 + 两次新密码确认"""
+        from config_password import change_password as do_change, has_password
+
+        if not has_password():
+            messagebox.showinfo("提示", "当前尚未设置密码，请先关闭配置页再重新进入以设置。")
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title("修改配置页密码")
+        dlg.resizable(False, False)
+        dlg.transient(self.winfo_toplevel())
+        frm = ttk.Frame(dlg, padding=14)
+        frm.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frm, text="原密码：").grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Label(frm, text="新密码：").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Label(frm, text="确认新密码：").grid(row=2, column=0, sticky="w", pady=5)
+        old_var = tk.StringVar()
+        new_var = tk.StringVar()
+        confirm_var = tk.StringVar()
+        ttk.Entry(frm, textvariable=old_var, show="*", width=24).grid(row=0, column=1, pady=5)
+        ttk.Entry(frm, textvariable=new_var, show="*", width=24).grid(row=1, column=1, pady=5)
+        ttk.Entry(frm, textvariable=confirm_var, show="*", width=24).grid(row=2, column=1, pady=5)
+
+        def submit():
+            old, new, confirm = old_var.get(), new_var.get(), confirm_var.get()
+            if not new.strip():
+                messagebox.showerror("错误", "新密码不能为空", parent=dlg)
+                return
+            if new != confirm:
+                messagebox.showerror("错误", "两次输入的新密码不一致", parent=dlg)
+                return
+            ok, err = do_change(old, new)
+            if ok:
+                messagebox.showinfo("成功", "密码已修改，下次进入配置页请用新密码。", parent=dlg)
+                dlg.destroy()
+            else:
+                messagebox.showerror("失败", err or "修改失败", parent=dlg)
+
+        btn = ttk.Frame(frm)
+        btn.grid(row=3, column=0, columnspan=2, pady=(10, 0))
+        ttk.Button(btn, text="确定", command=submit).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btn, text="取消", command=dlg.destroy).pack(side=tk.LEFT, padx=6)
+        dlg.grab_set()
 
     def lock_config_page(self):
         """手动锁定配置页并返回首页内容"""

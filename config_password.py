@@ -1,18 +1,27 @@
 # -*- coding: utf-8 -*-
-"""配置页访问密码校验（PBKDF2-HMAC-SHA256 + 随机盐）
+"""配置页访问密码（PBKDF2-HMAC-SHA256 + 随机盐，文件落在软件同目录）
 
-历史：config_password.txt 明文存放（如 "495103"），任何可读目录者都能拿到。
-现在：文件改为 "pbkdf2$<salt_hex>$<hash_hex>" 格式；首次读取若为旧明文，
-校验通过后自动迁移为哈希（保持用户无需手工改密的平滑升级）。
+历史问题：
+- PASSWORD_FILE 原为相对路径 'config_password.txt'。打包后从桌面双击 exe，
+  cwd 不是软件目录 → 读不到真实密码文件 → 误判"没设密码"，用默认 admin123
+  生成哈希写到 cwd（桌面），导致用户输原来的密码也进不去。
+  现在改为 config_path.app_dir() 拼绝对路径，与 warehouse_config.json 同策略。
 
-对外只暴露 verify_config_password(input_pwd) -> bool。
+密码生命周期：
+- has_password()：是否已有有效密码（PBKDF2 哈希或旧明文）。无 → 首次进入引导设置。
+- set_password(new)：首次设置（无需旧密码），写哈希。
+- change_password(old, new)：校验旧密码后改密。
+- verify_config_password(input)：校验，兼容旧明文并自动迁移为哈希。
+
+对外 API：has_password / set_password / change_password / verify_config_password
 """
 import hashlib
 import hmac
 import os
 
-PASSWORD_FILE = 'config_password.txt'
-DEFAULT_PASSWORD = 'admin123'
+from config_path import app_dir
+
+PASSWORD_FILE = os.path.join(app_dir(), 'config_password.txt')
 PREFIX = 'pbkdf2'
 ITERATIONS = 200000
 SALT_BYTES = 16
@@ -27,7 +36,7 @@ def _read_raw():
 
 
 def _hash(password, salt_bytes, iterations=ITERATIONS):
-    return hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'),
+    return hashlib.pbkdf2_hmac('sha256', str(password).encode('utf-8'),
                                salt_bytes, iterations)
 
 
@@ -52,17 +61,17 @@ def _parse_hashed(raw):
 
 
 def _write_hashed(password):
-    """把密码以 PBKDF2 哈希写回文件，限制文件访问（失败不阻断）"""
+    """把密码以 PBKDF2 哈希写回软件同目录，限制 ACL（失败不阻断）"""
     salt = os.urandom(SALT_BYTES)
     digest = _hash(password, salt)
     raw = '{}${}${}${}'.format(PREFIX, salt.hex(), digest.hex(), ITERATIONS)
     try:
+        os.makedirs(os.path.dirname(PASSWORD_FILE) or '.', exist_ok=True)
         with open(PASSWORD_FILE, 'w', encoding='utf-8') as f:
             f.write(raw)
     except Exception as e:
         print('[ConfigPwd] 写入哈希失败: {}'.format(e))
         return False
-    # Windows 下限制 ACL，仅当前用户可读写
     try:
         if os.name == 'nt':
             import subprocess
@@ -78,14 +87,46 @@ def _write_hashed(password):
     return True
 
 
+def has_password():
+    """是否已有有效密码。False → 首次进入应引导用户自己设置"""
+    raw = _read_raw()
+    if not raw:
+        return False
+    if _is_hashed(raw):
+        return _parse_hashed(raw) is not None
+    # 旧明文视为已设置（保留历史兼容，用户可用原密码登录后改密）
+    return True
+
+
+def set_password(new_password):
+    """首次设置密码（无需旧密码）。空密码不允许。返回 (ok, error)"""
+    if new_password is None or not str(new_password).strip():
+        return False, '密码不能为空'
+    return _write_hashed(new_password), ''
+
+
+def change_password(old_password, new_password):
+    """校验旧密码后修改密码。返回 (ok, error)"""
+    if not has_password():
+        return False, '当前未设置密码'
+    if not verify_config_password(old_password):
+        return False, '原密码不正确'
+    if new_password is None or not str(new_password).strip():
+        return False, '新密码不能为空'
+    if not _write_hashed(new_password):
+        return False, '写入新密码失败'
+    return True, ''
+
+
 def verify_config_password(input_pwd):
-    """校验配置页密码；旧明文格式校验成功后自动迁移为哈希"""
+    """校验密码；旧明文格式校验成功后自动迁移为哈希"""
     if input_pwd is None:
         return False
     raw = _read_raw()
     if not raw:
-        raw = DEFAULT_PASSWORD
-        _write_hashed(raw)
+        # 无密码文件时不再默认放行 —— 由 has_password() 引导首次设置，
+        # 这里保守拒绝，避免绕过首次设置流程。
+        return False
 
     if _is_hashed(raw):
         parsed = _parse_hashed(raw)

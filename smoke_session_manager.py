@@ -263,9 +263,13 @@ try:
     with tf.TemporaryDirectory() as td:
         p = os.path.join(td, 'config_password.txt')
         cfg.PASSWORD_FILE = p
-        # 初始无文件 -> 默认密码 admin123 被写入哈希
-        check('默认密码校验通过', cfg.verify_config_password('admin123') is True)
-        check('默认密码已迁移为哈希', cfg._read_raw().startswith('pbkdf2$'))
+        # 新行为：无文件不默认放行，由 has_password() 引导首次设置
+        check('首次无密码', cfg.has_password() is False)
+        check('无文件时任意密码被拒', cfg.verify_config_password('admin123') is False)
+        # 首次设置后校验
+        check('首次设置成功', cfg.set_password('UserSet123')[0] is True)
+        check('设置后校验通过', cfg.verify_config_password('UserSet123') is True)
+        check('已写入哈希', cfg._read_raw().startswith('pbkdf2$'))
         check('错误密码被拒', cfg.verify_config_password('wrong') is False)
         # 旧明文迁移
         with open(p, 'w', encoding='utf-8') as f:
