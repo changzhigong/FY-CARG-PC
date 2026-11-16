@@ -77,6 +77,7 @@ from datetime import datetime
 from tkinter import ttk, messagebox, filedialog
 
 from base_page import BasePage
+from config_path import config_file_path
 
 BASE_URL = 'https://xb.fy-carg.com'
 URL_WAYBILL_QUERY = (
@@ -245,7 +246,7 @@ class WaybillManagePage(BasePage):
         if opts:
             return dict(opts)
         try:
-            with open('warehouse_config.json', encoding='utf-8') as f:
+            with open(config_file_path(), encoding='utf-8') as f:
                 return dict(json.load(f).get('WAREHOUSE_OPTIONS', {}))
         except Exception:
             return {}

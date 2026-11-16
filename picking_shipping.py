@@ -7,6 +7,7 @@ from tkcalendar import DateEntry
 from base_page import BasePage
 from copy import deepcopy
 from tooltip_manager import tooltip_manager
+from config_path import config_file_path
 # 常量定义
 # 拣货单查询（Web/安卓同源端点）
 PICKING_QUERY_URL = (
@@ -25,8 +26,8 @@ def load_config(file_path):
     with open(file_path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-# 从文件加载配置
-loaded_config = load_config("warehouse_config.json")
+# 从文件加载配置（绝对路径；config_file_path 在文件缺失时自动落地内置模板）
+loaded_config = load_config(config_file_path())
 
 # 获取原始字典结构
 WAREHOUSE_OPTIONS = loaded_config["WAREHOUSE_OPTIONS"]

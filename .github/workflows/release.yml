@@ -77,7 +77,8 @@ jobs:
           echo "app_name=FY-CARG-PC-v${NEW}" >> $GITHUB_OUTPUT
           echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      # ─── 构建（VERSION / BUILD_DATE 打进产物，供「关于软件」与检查更新读取）───
+      # ─── 构建（VERSION / BUILD_DATE 打进产物供关于/检查更新读取；
+      #      warehouse_config.json 内置为模板，启动时落地到 exe 同目录）───
       - name: Build with PyInstaller
         run: |
           pyinstaller \
@@ -86,6 +87,7 @@ jobs:
             --log-level WARN \
             --add-data "VERSION;." \
             --add-data "BUILD_DATE;." \
+            --add-data "warehouse_config.json;." \
             --hidden-import win32com \
             --hidden-import win32com.client \
             --hidden-import pythoncom \

@@ -1,4 +1,5 @@
 import tkinter as tk
+from config_path import ensure_config_file
 from login_app import LoginApp
 # # from main_app import MainApplication
 # # # def main():
@@ -53,6 +54,16 @@ def main():
     用户直接关闭主窗或关闭登录窗则真正退出。全程只有一个 mainloop 在跑，
     不再出现嵌套事件循环。
     """
+    # 启动时把内置仓库配置落地到软件同目录（已存在则保留用户的修改）
+    try:
+        path, created, err = ensure_config_file()
+        if created:
+            print('[配置] 已生成默认配置: {}'.format(path))
+        if err:
+            print('[配置] 警告: {}'.format(err))
+    except Exception as e:
+        print('[配置] 落地检查异常: {}'.format(e))
+
     while True:
         # 创建登录窗口
         login_root = tk.Tk()

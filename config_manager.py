@@ -2,6 +2,7 @@ import json
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from base_page import BasePage
+from config_path import config_file_path
 # WebSocket配置
 WEBSOCKET_CONFIG = {
     "heartbeat_interval": 30,  # 心跳间隔(秒)
@@ -24,8 +25,8 @@ class ConfigPage(BasePage):
             from main_app import loaded_config
             self.loaded_config = loaded_config or {}
         except ImportError:
-            # 兜底读取文件
-            self.loaded_config = self.load_config("warehouse_config.json") or {}
+            # 兜底读取文件（绝对路径，与工作目录无关）
+            self.loaded_config = self.load_config(config_file_path()) or {}
 
         # 顶部：选择仓库
         top_frame = ttk.LabelFrame(self.content_frame, text="仓库选择")
@@ -205,7 +206,8 @@ class ConfigPage(BasePage):
 
     def _write_config_to_file(self, cfg):
         try:
-            with open("warehouse_config.json", "w", encoding="utf-8") as f:
+            # 写入软件同目录的持久化配置（与工作目录无关）
+            with open(config_file_path(), "w", encoding="utf-8") as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
         except Exception as e:
             messagebox.showerror("写入失败", str(e))

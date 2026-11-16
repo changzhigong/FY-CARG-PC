@@ -28,6 +28,7 @@ from internal_use_review import InternalUseReviewPage
 from other_inbound_review import OtherInboundReviewPage
 from other_outbound_apply import OtherOutboundApplyPage
 from other_outbound_review import OtherOutboundReviewPage
+from config_path import config_file_path
 from purchase_sign import PurchaseSignPage
 from purchase_putaway import PurchasePutawayPage
 from help_center import HelpCenterPage
@@ -132,9 +133,9 @@ class MainApplication:
         self._relogin_pending = False       # 防止重复触发重登
         self._logout_requested = False      # 用户主动退出登录
         
-        # 从配置文件加载选项
+        # 从配置文件加载选项（绝对路径，与工作目录无关；缺失时自动落地内置模板）
         try:
-            with open("warehouse_config.json", "r", encoding="utf-8") as f:
+            with open(config_file_path(), "r", encoding="utf-8") as f:
                 config = json.load(f)
                 self.options = config["WAREHOUSE_OPTIONS"]
         except Exception as e:
