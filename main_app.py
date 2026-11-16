@@ -122,8 +122,15 @@ class MainApplication:
         self.root.title("郑州晖锦汽车配件有限公司")
         self.root.geometry("1920x1000")
         self.root.attributes("-alpha", 0.95)
-        # 统一管理session
-        self.session = session if session else requests.Session()
+        # 统一管理session（ManagedSession：集中失效判定 + 竞态防护 + timeout）
+        from session_manager import ManagedSession
+        self.session = session if isinstance(session, ManagedSession) else ManagedSession()
+        if not self.session.on_invalid:
+            # 失效回调只置标志；UI 跳转由 check_login_status 在主线程完成
+            self.session.on_invalid = lambda reason: self._mark_session_invalid(reason)
+        self.auth_invalidated = False       # 会话失效待重登标志
+        self._relogin_pending = False       # 防止重复触发重登
+        self._logout_requested = False      # 用户主动退出登录
         
         # 从配置文件加载选项
         try:
@@ -218,31 +225,87 @@ class MainApplication:
         self.create_status_bar()
         # 用于跟踪时间更新的after调用
         self.time_update_id = None
+
+        # 受控退出：点窗口 X 正常退出（不误清"记住我"凭据）
+        self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
+    def _mark_session_invalid(self, reason=''):
+        """会话失效回调（可能来自工作线程）——只置标志，绝不在此操作 Tkinter"""
+        print(f"[Session] 检测到会话失效: {reason}")
+        self.auth_invalidated = True
+
     def check_login_status(self, response):
+        """检查登录状态：失效则置标志并由主线程统一跳登录。
+
+        返回 True 表示会话已失效（页面应中止数据处理）。
+        注意：不再在方法内创建 tk.Tk()/mainloop()——那会在工作线程
+        触发，递归套事件循环且线程不安全。改由主线程 after() 调度。
         """
-        检查登录状态，如果token被顶下线则处理登出
-        """
+        invalid = False
         try:
-            if response and hasattr(response, 'text') and response.text:
-                data = response.json()
-                error_msg = data.get('errorMsg', '')
-                if '错误原因:token 已被顶下线' in error_msg:
-                    # 显示下线提示
-                    messagebox.showerror("登录状态异常", "您的账号已在其他地方登录，当前会话已失效。\n即将返回登录界面。")
-                    
-                    # 关闭主窗口
-                    self.root.destroy()
-                    
-                    # 重新打开登录窗口
-                    from login_app import LoginApp
-                    login_root = tk.Tk()
-                    login_app = LoginApp(login_root)
-                    login_root.mainloop()
-                    return True
-        except Exception as e:
-            # 解析响应出错，但不影响主流程
+            if self.auth_invalidated:
+                invalid = True
+            elif response is not None:
+                invalid = self.session.is_invalid_response(response)
+        except Exception:
+            invalid = False
+
+        if invalid:
+            self.auth_invalidated = True
+            self._schedule_relogin('您的登录已失效或账号在其他地方登录，请重新登录。')
+        return invalid
+
+    def _schedule_relogin(self, message):
+        """把"回到登录页"调度回主线程，带防重入"""
+        if self._relogin_pending:
+            return
+        self._relogin_pending = True
+        try:
+            self.root.after(0, lambda: self._do_relogin(message))
+        except Exception:
+            # root 已销毁时直接置标志，由 main.py 生命周期兜底
+            self._relogin_pending = False
+
+    def _do_relogin(self, message):
+        """主线程执行：提示 + 标记退出码，由 main.py 循环重新弹出登录窗"""
+        self._relogin_pending = False
+        try:
+            messagebox.showwarning("登录状态异常", message)
+        except Exception:
             pass
-        return False
+        self.logout(clear_credentials=True)
+
+    def logout(self, clear_credentials=True):
+        """退出登录：清理会话与 cookie，关闭主窗交回 main.py 重登循环"""
+        try:
+            if clear_credentials:
+                self.session.logout()       # 清 cookie 文件 + 内存 + 连接池
+            else:
+                self.session.clear_credentials()
+        except Exception as e:
+            print(f"[Session] 登出清理异常: {e}")
+        self._logout_requested = True
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def _confirm_logout(self):
+        """退出登录确认：清会话与 cookie，回到登录页（保留记住的账密）"""
+        if not messagebox.askyesno("退出登录", "确定要退出当前账号吗？\n退出后需要重新输入验证码登录。"):
+            return
+        # 保留"记住我"的账密，仅清会话 cookie（对齐安卓端语义）
+        self.logout(clear_credentials=True)
+
+    def _on_window_close(self):
+        """窗口关闭按钮：正常退出不做凭据清理（保留"记住我"）"""
+        try:
+            self.session.close()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     # def create_menu(self):
     #     tab_control = ttk.Notebook(self.root, style="Custom.TNotebook")
@@ -283,13 +346,25 @@ class MainApplication:
     #     self._config_unlocked = False
         
     def _get_config_password(self):
-        """读取配置页面密码，优先从文件config_password.txt；否则使用默认"""
+        """保留兼容方法名：返回密码文件原始内容（不再用于明文比较）。
+
+        实际校验请用 _verify_config_password()（PBKDF2 哈希 + 旧明文自动迁移）。
+        """
         try:
             with open("config_password.txt", "r", encoding="utf-8") as f:
                 val = f.read().strip()
                 return val if val else "admin123"
         except Exception:
             return "admin123"
+
+    def _verify_config_password(self, input_pwd):
+        """PBKDF2 校验配置页密码（兼容旧明文并自动迁移）"""
+        try:
+            from config_password import verify_config_password
+            return verify_config_password(input_pwd)
+        except Exception as e:
+            print(f"[ConfigPwd] 校验异常: {e}")
+            return False
 
     # def on_tab_change(self, event):
     #     """处理选项卡切换事件"""
@@ -555,7 +630,8 @@ class MainApplication:
             ("其他出入库管理", ["其他入库审核", "报损出库申请", "其它出库审核"]),
             ("采购入库", ["到货签收", "入库上架"]),
             ("帮助", []),
-            ("配置管理", [])
+            ("配置管理", []),
+            ("退出登录", [])
         ]
         
         for i, (tab_name, buttons) in enumerate(tabs_info):
@@ -581,6 +657,8 @@ class MainApplication:
                     btn.config(command=self.open_config_page)
                 elif tab_name == "帮助":
                     btn.config(command=lambda: self.show_frame("HelpCenterPage"))
+                elif tab_name == "退出登录":
+                    btn.config(command=self._confirm_logout)
         
         # 创建配置页访问控制状态
         self._config_unlocked = False
@@ -784,7 +862,7 @@ class MainApplication:
             pwd = simpledialog.askstring("安全验证", "请输入配置页面密码：", show="*")
             if pwd is None:
                 return
-            if pwd != self._get_config_password():
+            if not self._verify_config_password(pwd):
                 messagebox.showerror("权限错误", "密码不正确，无法进入配置页面")
                 return
             self._config_unlocked = True

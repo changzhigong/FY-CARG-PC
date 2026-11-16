@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import requests
 from http import cookiejar
-from cryptography.fernet import Fernet
+import base64
 import json
 import os
 from datetime import datetime
@@ -11,21 +11,62 @@ import io
 import sys
 import traceback
 
+# DPAPI 优先（Windows 凭据绑定当前用户，密钥不再与密文同目录明文存放）。
+# cryptography 仅用于读取历史 Fernet 密文，缺库时降级但不影响新保存。
+try:
+    import win32crypt
+    HAS_DPAPI = True
+except ImportError:
+    win32crypt = None
+    HAS_DPAPI = False
+try:
+    from cryptography.fernet import Fernet
+    HAS_FERNET = True
+except ImportError:
+    Fernet = None
+    HAS_FERNET = False
+
+from session_manager import ManagedSession
+
+DPAPI_PREFIX = 'dpapi:'
+DPAPI_DESC = 'FY-CARG-PC'
+
 
 class SecureStorage:
-    """安全存储处理类"""
+    """安全存储处理类：DPAPI 加密（兼容旧 Fernet 密文读取）"""
     def __init__(self):
-        self.key_file = 'secret.key'
+        self.key_file = 'secret.key'          # 仅用于读取历史密文
         self.data_file = 'user_config.json'
-        self._ensure_key_exists()
 
-    def _ensure_key_exists(self):
-        if not os.path.exists(self.key_file):
-            key = Fernet.generate_key()
-            with open(self.key_file, 'wb') as f:
-                f.write(key)
+    def _encrypt(self, password):
+        """DPAPI 加密，密文带 dpapi: 前缀以区分旧 Fernet 格式"""
+        if HAS_DPAPI:
+            blob = win32crypt.CryptProtectData(
+                password.encode('utf-8'), DPAPI_DESC, None, None, None, 0x1)
+            return DPAPI_PREFIX + base64.b64encode(blob).decode('ascii')
+        # 非 Windows 或缺少 pywin32：退回 Fernet（有库时）
+        if HAS_FERNET:
+            return self._get_fernet().encrypt(password.encode()).decode()
+        return password  # 兜底明文，仅极端环境
 
-    def _get_cipher(self):
+    def _decrypt(self, token):
+        """按前缀选择解密方式，兼容旧 Fernet 密文"""
+        if not token:
+            return ''
+        if token.startswith(DPAPI_PREFIX):
+            if not HAS_DPAPI:
+                return ''
+            blob = base64.b64decode(token[len(DPAPI_PREFIX):])
+            return win32crypt.CryptUnprotectData(blob, None, None, None, 0x1)[1].decode('utf-8')
+        # 历史格式：Fernet
+        if HAS_FERNET and os.path.exists(self.key_file):
+            try:
+                return self._get_fernet().decrypt(token.encode()).decode()
+            except Exception:
+                return ''
+        return ''
+
+    def _get_fernet(self):
         with open(self.key_file, 'rb') as f:
             return Fernet(f.read())
 
@@ -34,9 +75,9 @@ class SecureStorage:
             data = {
                 'remember': remember,
                 'username': username if remember else '',
-                'password': self._get_cipher().encrypt(password.encode()).decode() if remember else ''
+                'password': self._encrypt(password) if remember else ''
             }
-            with open(self.data_file, 'w') as f:
+            with open(self.data_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f)
             print(f"[INFO] 凭证已保存: {username}")
         except Exception as e:
@@ -49,15 +90,12 @@ class SecureStorage:
             if not os.path.exists(self.data_file):
                 return None, None, False
 
-            with open(self.data_file, 'r') as f:
+            with open(self.data_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
-            password = ''
-            if data['remember'] and data['password']:
-                password = self._get_cipher().decrypt(data['password'].encode()).decode()
-
-            print(f"[INFO] 凭证已加载: {data['username'] if data['username'] else '无用户名'}")
-            return data['username'], password, data['remember']
+            password = self._decrypt(data.get('password', '')) if data.get('remember') else ''
+            print(f"[INFO] 凭证已加载: {data.get('username') if data.get('username') else '无用户名'}")
+            return data.get('username'), password, data.get('remember', False)
         except Exception as e:
             print(f"[ERROR] 加载凭证失败 - 错误信息: {str(e)}")
             print(f"[ERROR] 错误详情: {traceback.format_exc()}")
@@ -73,18 +111,12 @@ class LoginApp:
         self.storage = SecureStorage()
         # 登录状态标志
         self.login_success = False        
-        # 创建新的session
-        self.session = requests.Session()
-        # 创建cookies jar
-        self.cookie_jar = cookiejar.LWPCookieJar(filename='cookies')
-        # 尝试加载cookies，如果不存在则创建新的
-        try:
-            self.cookie_jar.load(ignore_discard=True, ignore_expires=True)
-            print("[INFO] Cookies加载成功")
-        except Exception as e:
-            print(f"[WARNING] 加载cookies失败: {e}")
-        # 将cookie jar设置到session
-        self.session.cookies = self.cookie_jar  # type: ignore
+        # 统一会话管理器：继承 requests.Session，携带持久化 cookie，
+        # 并对全部请求集中注入 timeout / 失效判定 / 竞态防护（对页面透明）
+        self.session = ManagedSession(cookie_file='cookies')
+        self.cookie_jar = self.session.cookie_jar
+        self.session.load_cookies()
+        print("[INFO] 会话管理器初始化完成")
         
         self.login_attempts = 0
         self.max_attempts = 3
@@ -261,7 +293,7 @@ class LoginApp:
             print("[INFO] 开始验证验证码")
             verify_url = f'https://xb.fy-carg.com/dmscloud.basedata/login/verifyCode/{captcha}'
             print(f"[INFO] 验证码验证URL: {verify_url}")
-            verify_res = self.session.get(verify_url, headers=self.headers)
+            verify_res = self.session.get(verify_url, headers=self.headers, timeout=10)
             print(f"[INFO] 验证码验证响应状态: {verify_res.status_code}")
             print(f"[INFO] 验证码验证响应内容: {verify_res.text}")
             
@@ -281,22 +313,22 @@ class LoginApp:
             }
             
             print(f"[INFO] 登录请求URL: {self.login_api_url}")
-            print(f"[INFO] 登录请求数据: {login_data}")
+            # 安全：绝不打印密码（原实现明文输出 login_data 到控制台）
+            print(f"[INFO] 登录请求用户: {username}")
             response = self.session.post(self.login_api_url, 
                                       headers=self.headers, 
-                                      json=login_data)
+                                      json=login_data,
+                                      timeout=15)
             print(f"[INFO] 登录响应状态码: {response.status_code}")
             print(f"[INFO] 登录响应内容: {response.text}")
 
             if response.status_code == 200 and response.json().get('success'):
                 print("[INFO] 登录成功")
                 self.storage.save_credentials(username, password, self.remember_var.get())
-                #保存cookies以备后续使用
-                try:
-                    self.cookie_jar.save(ignore_discard=True, ignore_expires=True)
-                    print("[INFO] Cookies保存成功")
-                except Exception as e:
-                    print(f"[WARNING] 保存cookies失败: {e}")
+                # 保存 cookies 并限制文件 ACL（仅当前用户可读写）
+                self.session.save_cookies(restrict_acl=True)
+                # 登录成功后关闭"登录阶段"标志，交由主程序注入失效回调
+                self.session.auth_check_enabled = True
                 # 设置登录成功的标志
                 self.login_success =True
 

@@ -12,6 +12,7 @@ venv/
 # 密钥与凭证
 secret.key
 config_password.txt
+user_config.json
 *.pem
 
 # Cookies / Session

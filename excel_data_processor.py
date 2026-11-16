@@ -231,8 +231,9 @@ class ExcelDataProcessPage(BasePage):
             list_res = self.controller.session.get(list_url, params=params, headers=headers)
             total_res = self.controller.session.get(total_url, params=params, headers=headers)
 
-            # 检查登录状态
-            if not hasattr(self.controller, '_check_response') or self.controller._check_response(list_res):
+            # 检查登录状态（controller 统一提供 check_login_status；
+            # 原判断 _check_response 在 controller 上不存在，恒为 True 导致失效分支不可达）
+            if not self.controller.check_login_status(list_res):
                 list_json = list_res.json()
                 total_json = total_res.json()
 
