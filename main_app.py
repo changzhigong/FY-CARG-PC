@@ -8,6 +8,7 @@ from home_page import HomePage
 from excel_data_processor import ExcelDataProcessPage
 from deliver_report import DeliverReportProcessPage
 from waybill_manage import WaybillManagePage
+from delivery_vehicle import DeliveryVehiclePage
 from outbound_manager import outBoundProcessPage
 from picking_shipping import OneKeyProcessPage
 from transfer_manager import TransferProcessPage
@@ -165,6 +166,7 @@ class MainApplication:
             "ExcelDataProcessPage": ExcelDataProcessPage,
             "DeliverReportProcessPage": DeliverReportProcessPage,
             "WaybillManagePage": WaybillManagePage,
+            "DeliveryVehiclePage": DeliveryVehiclePage,
             "outBoundProcessPage": outBoundProcessPage,
             "OneKeyProcessPage": OneKeyProcessPage,
             "TransferProcessPage": TransferProcessPage,
@@ -623,7 +625,7 @@ class MainApplication:
         tabs_info = [
             ("首页", []),
             ("快捷操作", ["送货日报", "财务日报"]),
-            ("仓库理货", ["出库单管理", "拣货单管理", "发运单管理"]),
+            ("仓库理货", ["出库单管理", "拣货单管理", "发运单管理", "送货车辆"]),
             ("库内作业", ["调拨入库", "调拨申请", "移库管理"]),
             ("仓储查询", ["库存冻结查询", "装箱明细查询", "账单查询", "销售明细", "出入库流水记录", "调拨明细查询"]),
             ("报销管理", ["报销管理", "报销审核", "其他支付管理"]),
@@ -727,6 +729,7 @@ class MainApplication:
                 "出库单管理": "outBoundProcessPage",
                 "拣货单管理": "OneKeyProcessPage",
                 "发运单管理": "WaybillManagePage",
+                "送货车辆": "DeliveryVehiclePage",
                 "调拨入库": "TransferProcessPage",
                 "调拨申请": "TransferApplicationPage",
                 "移库管理": "TransferChangePage",
@@ -989,6 +992,7 @@ class MainApplication:
             "outBoundProcessPage": "仓库理货",
             "OneKeyProcessPage": "仓库理货",
             "WaybillManagePage": "仓库理货",
+            "DeliveryVehiclePage": "仓库理货",
             "TransferProcessPage": "库内作业",
             "TransferApplicationPage": "库内作业",
             "TransferChangePage": "库内作业",
@@ -1025,6 +1029,7 @@ class MainApplication:
                         "outBoundProcessPage": "出库单管理",
                         "OneKeyProcessPage": "拣货单管理",
                         "WaybillManagePage": "发运单管理",
+                        "DeliveryVehiclePage": "送货车辆",
                         "TransferProcessPage": "调拨入库",
                         "TransferApplicationPage": "调拨申请",
                         "TransferChangePage": "移库管理",
