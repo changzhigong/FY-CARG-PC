@@ -36,6 +36,7 @@ from datetime import datetime
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+from tkcalendar import DateEntry
 
 from base_page import BasePage
 from config_path import config_file_path, app_dir
@@ -317,8 +318,11 @@ class DeliveryVehiclePage(BasePage):
         self.warehouse_name = ''
         self.route_opts = []
         self.last_file = ''
-        super().__init__(parent, controller)
+        # 必须在 super().__init__() 之前加载：BasePage.__init__ 会调用
+        # create_widgets() -> _build_filter()，Combobox 的 values 取自 warehouse_map；
+        # 若放到 super 之后，构建下拉时 warehouse_map 仍为空 → 仓库选项为空。
         self._load_warehouses()
+        super().__init__(parent, controller)
 
     # ---------- 工具 ----------
     def _log(self, *args):
@@ -392,13 +396,15 @@ class DeliveryVehiclePage(BasePage):
         status_cb.pack(side=tk.LEFT, padx=(0, 10))
 
         today = str(datetime.now().date())
+        # 统一日期选择器：DateEntry 绑定 StringVar，取值处仍用 .get()（yyyy-mm-dd）。
         ttk.Label(line, text='发运开始:').pack(side=tk.LEFT, padx=(4, 1))
         self.start_var = tk.StringVar(value=today)
-        ttk.Entry(line, textvariable=self.start_var, width=12).pack(
-            side=tk.LEFT, padx=(0, 8))
+        DateEntry(line, textvariable=self.start_var, width=12,
+                  date_pattern='yyyy-mm-dd').pack(side=tk.LEFT, padx=(0, 8))
         ttk.Label(line, text='发运结束:').pack(side=tk.LEFT, padx=(4, 1))
         self.end_var = tk.StringVar(value=today)
-        ttk.Entry(line, textvariable=self.end_var, width=12).pack(side=tk.LEFT)
+        DateEntry(line, textvariable=self.end_var, width=12,
+                  date_pattern='yyyy-mm-dd').pack(side=tk.LEFT)
 
     def _build_tip(self, outer, row):
         tip = ('按「车牌号 + 发运日期」汇总片数/金额，每个车牌单独一个 sheet；'

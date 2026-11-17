@@ -75,6 +75,7 @@ import threading
 import tkinter as tk
 from datetime import datetime
 from tkinter import ttk, messagebox, filedialog
+from tkcalendar import DateEntry
 
 from base_page import BasePage
 from config_path import config_file_path
@@ -334,8 +335,13 @@ class WaybillManagePage(BasePage):
             var = tk.StringVar(value=str(default) if default else '')
             self.date_vars[key] = var
             self.filter_vars[key] = var
-            ttk.Entry(row4, textvariable=var, width=12).pack(
-                side=tk.LEFT, padx=(0, 8))
+            cal = DateEntry(row4, textvariable=var, width=12,
+                            date_pattern='yyyy-mm-dd')
+            cal.pack(side=tk.LEFT, padx=(0, 8))
+            if not default:
+                # 打印日期默认为空（Web 端不参与默认日期校验）：DateEntry 构造时
+                # 会自动填今天，这里清空以保持「空=不过滤」的原有语义。
+                cal.delete(0, tk.END)
 
     def setup_action_bar(self, parent):
         bar = ttk.Frame(parent)

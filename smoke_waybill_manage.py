@@ -14,6 +14,15 @@ import sys
 import tempfile
 import tkinter as tk
 import tkinter.messagebox as mb
+from tkcalendar import DateEntry
+
+
+def _walk_widgets(widget):
+    """递归遍历 Tk 子控件（用于统计 DateEntry 数量）。"""
+    for child in widget.winfo_children():
+        yield child
+        yield from _walk_widgets(child)
+
 
 PASS = 0
 FAIL = 0
@@ -128,8 +137,8 @@ def main():
           '"WaybillManagePage": WaybillManagePage' in main_src)
     check('[1b] import WaybillManagePage',
           'from waybill_manage import WaybillManagePage' in main_src)
-    check('[1c] tabs_info 仓库理货 = 3 项（含发运单管理）',
-          '("仓库理货", ["出库单管理", "拣货单管理", "发运单管理"])' in main_src)
+    check('[1c] tabs_info 仓库理货 = 4 项（含发运单管理、送货车辆）',
+          '("仓库理货", ["出库单管理", "拣货单管理", "发运单管理", "送货车辆"])' in main_src)
     check('[1d] page_map 三项齐全',
           '"发运单管理": "WaybillManagePage"' in main_src
           and '"出库单管理": "outBoundProcessPage"' in main_src
@@ -211,6 +220,11 @@ def main():
     check('[3d2] 发运状态下拉只有 Web 的 2 项 + 全部（非字典 6 项）',
           list(page.status_cb['values']) == ['全部', '已发运', '未发运'])
     check('[3d3] 默认状态为「全部」', page.status_var.get() == '全部')
+    check('[3d4] 四个日期框均为 DateEntry',
+          sum(1 for c in _walk_widgets(page) if isinstance(c, DateEntry)) == 4)
+    check('[3d5] 打印日期默认为空(不参与过滤)',
+          page.filter_vars['printStartDate'].get() == ''
+          and page.filter_vars['printEndDate'].get() == '')
 
     # 解码
     check('[3e] decode 发运状态', page.decode('9047', '90471003') == '已签收')

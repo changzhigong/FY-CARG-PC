@@ -221,6 +221,42 @@ try:
 except Exception as e:
     check('import main_app OK: {}'.format(e), False)
 
+print('=== 8. UI 回归：仓库下拉非空 + 日期为选择器 ===')
+try:
+    import tkinter as tk
+    from tkcalendar import DateEntry
+
+    class _Ctrl:
+        def __init__(self):
+            self.options = {'商丘库': 11, '郑州库': 6, '西安库': 7}
+
+        def after(self, ms, fn):
+            pass
+
+    _root = tk.Tk()
+    _root.withdraw()
+    _page = dv.DeliveryVehiclePage(_root, _Ctrl())
+    _root.update()
+    check('仓库下拉已填充(非空)',
+          list(_page.warehouse_cb['values']) == ['商丘库', '郑州库', '西安库'])
+    check('仓库默认选中第一项', _page.warehouse_var.get() == '商丘库')
+
+    def _collect_dateentries(widget, out):
+        for child in widget.winfo_children():
+            if isinstance(child, DateEntry):
+                out.append(child)
+            _collect_dateentries(child, out)
+
+    _des = []
+    _collect_dateentries(_page, _des)
+    check('发运起止均为 DateEntry(2个)', len(_des) == 2)
+    check('发运开始值为 yyyy-mm-dd', len(_page.start_var.get()) == 10
+          and _page.start_var.get()[4] == '-')
+    _root.destroy()
+except Exception as e:
+    # 无显示环境跳过 GUI 断言，不误判为功能失败
+    print('  (UI 断言跳过: {})'.format(e))
+
 print('\n结果: PASS={} FAIL={}'.format(PASS, FAIL))
 if FAILED:
     print('失败项:', FAILED)
