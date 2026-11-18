@@ -257,6 +257,89 @@ except Exception as e:
     # 无显示环境跳过 GUI 断言，不误判为功能失败
     print('  (UI 断言跳过: {})'.format(e))
 
+print('=== 9. 写入路径持久化（纯函数，始终运行）===')
+_orig_app_dir = dv.app_dir
+try:
+    _td = tempfile.mkdtemp()
+    dv.app_dir = lambda: _td
+    check('路径文件名正确', os.path.basename(dv.paths_file_path()) == 'delivery_vehicle_paths.json')
+    check('初始无路径记录', dv.load_saved_paths() == {})
+    check('保存路径成功', dv.save_saved_paths({'商丘库': r'D:\报表\商丘送货车辆.xlsx'}))
+    check('读取路径一致',
+          dv.load_saved_paths().get('商丘库') == r'D:\报表\商丘送货车辆.xlsx')
+    check('路径文件已落盘', os.path.exists(dv.paths_file_path()))
+    with open(dv.paths_file_path(), 'w', encoding='utf-8') as _f:
+        _f.write('broken{json')
+    check('损坏文件容错返回空', dv.load_saved_paths() == {})
+finally:
+    dv.app_dir = _orig_app_dir
+
+print('=== 10. 写入路径解析 + 就地编辑（GUI）===')
+try:
+    import tkinter as tk
+    _td2 = tempfile.mkdtemp()
+    _orig_app_dir = dv.app_dir
+    dv.app_dir = lambda: _td2
+    _orig_ask = dv.filedialog.asksaveasfilename
+
+    _root = tk.Tk()
+    _root.geometry('1600x900+0+0')
+    _root.update()
+    _p = dv.DeliveryVehiclePage(_root, _Ctrl())
+    _p.pack(fill=tk.BOTH, expand=True)
+    _p.warehouse_name = '商丘库'
+
+    # 路径解析：首次询问并记住 -> 再次静默复用
+    _calls = []
+    dv.filedialog.asksaveasfilename = lambda **kw: (
+        _calls.append(kw) or r'D:\报表\商丘送货车辆.xlsx')
+    _path1 = _p._resolve_write_path()
+    check('首次写入弹出并选路径', _path1 == r'D:\报表\商丘送货车辆.xlsx' and len(_calls) == 1)
+    check('initialfile 用仓库默认文件名',
+          _calls[0].get('initialfile') == '商丘送货车辆.xlsx')
+    check('路径已记住', _p.saved_paths.get('商丘库') == _path1)
+    _path2 = _p._resolve_write_path()
+    check('再次写入静默复用(不弹窗)', _path2 == _path1 and len(_calls) == 1)
+    _p.saved_paths.pop('商丘库', None)
+    dv.filedialog.asksaveasfilename = lambda **kw: ''
+    check('用户取消返回 None', _p._resolve_write_path() is None)
+
+    # 就地编辑：线路 Combobox / 数字 Entry / Esc 取消
+    _p.route_opts = ['商丘-永城', '商丘-民权']
+    _p.grouped = [{'plateNumber': '豫A1', 'date': '2026-11-01', 'quantity': 5.0,
+                   'amount': 100.0, 'deliverer': '张三', 'route': '',
+                   'returnQty': 0, 'brokenQty': 0}]
+    _p.tree.insert('', tk.END, iid='0', values=_p._row_values(1, _p.grouped[0]))
+    _root.update(); _root.update_idletasks()
+    check('可编辑列定义 5 列', len(dv.EDITABLE_COLUMNS) == 5)
+    _p._begin_cell_edit('0', 0, '#4', dv.EDITABLE_COLUMNS['#4'])
+    _root.update()
+    _w = _p._cell_editor['widget']
+    check('线路编辑器为 Combobox 且有候选',
+          'Combobox' in type(_w).__name__ and len(_w['values']) == 3)
+    _w.set('商丘-永城')
+    _p._dismiss_cell_editor(commit=True)
+    check('线路就地编辑已保存', _p.grouped[0]['route'] == '商丘-永城')
+    _p._begin_cell_edit('0', 0, '#5', dv.EDITABLE_COLUMNS['#5'])
+    _root.update()
+    _we = _p._cell_editor['widget']
+    _we.delete(0, tk.END); _we.insert(0, '12.5')
+    _p._dismiss_cell_editor(commit=True)
+    check('数字就地编辑已保存', _p.grouped[0]['quantity'] == 12.5)
+    _p._begin_cell_edit('0', 0, '#6', dv.EDITABLE_COLUMNS['#6'])
+    _root.update()
+    _wc = _p._cell_editor['widget']
+    _wc.delete(0, tk.END); _wc.insert(0, '999')
+    _p._dismiss_cell_editor(commit=False)
+    check('Esc 取消不改动原值', _p.grouped[0]['amount'] == 100.0)
+
+    _root.destroy()
+    dv.filedialog.asksaveasfilename = _orig_ask
+    dv.app_dir = _orig_app_dir
+except Exception as e:
+    dv.app_dir = _orig_app_dir
+    print('  (GUI 断言跳过: {})'.format(e))
+
 print('\n结果: PASS={} FAIL={}'.format(PASS, FAIL))
 if FAILED:
     print('失败项:', FAILED)

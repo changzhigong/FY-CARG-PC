@@ -77,6 +77,19 @@ PREVIEW_COLUMNS = ['序号', '车牌号', '出发日期', '线路', '送货片�
                    '总金额', '司机', '返程退货数', '破损数']
 PREVIEW_WIDTHS = [45, 120, 110, 160, 90, 100, 90, 95, 80]
 
+# 双击就地编辑：列号 -> (字段名, 控件类型)。仅这些列可编辑；
+# 序号/车牌/日期/司机 为分组键或只读展示，仍走整行对话框（双击这些列打开）。
+EDITABLE_COLUMNS = {
+    '#4': ('route', 'combo'),       # 线路：候选 Combobox（按仓库预筛，可手输）
+    '#5': ('quantity', 'number'),   # 送货片数
+    '#6': ('amount', 'number'),     # 总金额
+    '#8': ('returnQty', 'number'),  # 返程退货数
+    '#9': ('brokenQty', 'number'),  # 破损数
+}
+
+# 写入路径持久化文件（软件同目录，与 cwd 无关）
+PATHS_FILE = 'delivery_vehicle_paths.json'
+
 # Excel 报表样式（app deliveryReport.js）
 HEADER_FILL = 'FF409EFF'   # app applyHeaderStyle fgColor FFFFFFFF + 409EFF 底
 REPORT_COLUMN_WIDTHS = [6, 14, 16, 12, 14, 12, 12, 10]
@@ -179,6 +192,37 @@ def report_file_name(warehouse_name):
     """{仓库短名}送货车辆.xlsx（如 商丘送货车辆.xlsx）。"""
     short = warehouse_short_name(warehouse_name) or '未知仓库'
     return '%s送货车辆.xlsx' % short
+
+
+# -------------------------------------------------------------- 路径持久化
+def paths_file_path():
+    """路径记录文件的规范绝对路径（软件同目录，与 cwd 无关）。"""
+    return os.path.join(app_dir(), PATHS_FILE)
+
+
+def load_saved_paths():
+    """读取 {仓库名: 上次写入路径}；文件缺失/损坏均返回空 dict（不抛错）。"""
+    try:
+        with open(paths_file_path(), encoding='utf-8') as f:
+            data = json.load(f)
+        return dict(data) if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_saved_paths(paths):
+    """持久化 {仓库名: 路径}；失败返回 False，不阻断写入主流程。"""
+    try:
+        target = paths_file_path()
+        parent = os.path.dirname(target)
+        if parent and not os.path.exists(parent):
+            os.makedirs(parent, exist_ok=True)
+        with open(target, 'w', encoding='utf-8') as f:
+            json.dump(paths, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print('[送货车辆] 保存路径记录失败:', e)
+        return False
 
 
 def _style_sheet_header(ws):
@@ -318,10 +362,13 @@ class DeliveryVehiclePage(BasePage):
         self.warehouse_name = ''
         self.route_opts = []
         self.last_file = ''
+        self.saved_paths = {}      # 仓库名 -> 上次写入路径（持久化）
+        self._cell_editor = None   # 当前就地编辑控件
         # 必须在 super().__init__() 之前加载：BasePage.__init__ 会调用
         # create_widgets() -> _build_filter()，Combobox 的 values 取自 warehouse_map；
         # 若放到 super 之后，构建下拉时 warehouse_map 仍为空 → 仓库选项为空。
         self._load_warehouses()
+        self.saved_paths = load_saved_paths()
         super().__init__(parent, controller)
 
     # ---------- 工具 ----------
@@ -408,9 +455,10 @@ class DeliveryVehiclePage(BasePage):
 
     def _build_tip(self, outer, row):
         tip = ('按「车牌号 + 发运日期」汇总片数/金额，每个车牌单独一个 sheet；'
-               '双击预览行可编辑 线路/片数/金额/退回数/破损数。'
-               '导出为追加写入（同 日期+线路+片数+金额 的行跳过），文件名 {仓库}送货车辆.xlsx。')
-        ttk.Label(outer, text=tip, foreground='#409eff', wraplength=900,
+               '双击结果列表的 线路/片数/金额/退回数/破损数 单元格可直接就地编辑（回车保存、Esc 取消），'
+               '双击车牌/日期/司机列可打开整行编辑。'
+               '导出为追加写入（同 日期+线路+片数+金额 的行跳过），路径按仓库自动记住，无需每次选择。')
+        ttk.Label(outer, text=tip, foreground='#409eff', wraplength=1000,
                   justify='left').grid(row=row, column=0, sticky='w', pady=(0, 2))
 
     def _build_actions(self, outer, row):
@@ -420,14 +468,14 @@ class DeliveryVehiclePage(BasePage):
         self.query_btn.pack(side=tk.LEFT, padx=3)
         self.write_btn = ttk.Button(bar, text='追加写入 Excel', command=self.write_report)
         self.write_btn.pack(side=tk.LEFT, padx=3)
-        self.reselect_btn = ttk.Button(bar, text='清除文件路径', command=self.clear_file)
+        self.reselect_btn = ttk.Button(bar, text='重选路径', command=self.clear_file)
         self.reselect_btn.pack(side=tk.LEFT, padx=3)
-        self.file_var = tk.StringVar(value='目标文件：{仓库}送货车辆.xlsx（写入时可选）')
+        self.file_var = tk.StringVar(value='目标文件：按仓库记住路径，首次写入时选择')
         ttk.Label(bar, textvariable=self.file_var, foreground='#888').pack(
             side=tk.LEFT, padx=10)
 
     def _build_preview(self, outer, row):
-        box = ttk.LabelFrame(outer, text='送货车辆预览（双击行编辑）', padding=4)
+        box = ttk.LabelFrame(outer, text='送货车辆预览（双击单元格就地编辑）', padding=4)
         box.grid(row=row, column=0, sticky='nsew', pady=(0, 4))
         box.columnconfigure(0, weight=1)
         box.rowconfigure(0, weight=1)
@@ -563,7 +611,9 @@ class DeliveryVehiclePage(BasePage):
                              tags=('odd',) if idx % 2 == 0 else ())
             self.row_ids.append(iid)
         self.tree.tag_configure('odd', background='#fafafa')
-        self.file_var.set('目标文件：%s' % report_file_name(warehouse))
+        saved = self.saved_paths.get(warehouse)
+        self.file_var.set('目标文件：%s' % (saved if saved
+                                          else '%s（首次写入时选择）' % report_file_name(warehouse)))
         self.status_text.set('匹配发运单 %d 条，有效送货车辆 %d 组'
                              % (self.raw_count, len(self.grouped)))
         self.loading = False
@@ -580,16 +630,75 @@ class DeliveryVehiclePage(BasePage):
 
     # ---------- 双击编辑 ----------
     def _on_double_click(self, event):
+        """双击分两类：可编辑列就地编辑；车牌/日期/司机列打开整行对话框。"""
         row_id = self.tree.identify_row(event.y)
         if not row_id:
             return
         try:
-            idx = int(row_id) + 1
+            index = int(row_id)
         except ValueError:
             return
-        if idx > len(self.grouped):
+        if index >= len(self.grouped):
             return
-        self._open_edit_dialog(idx - 1)
+        column = self.tree.identify_column(event.x)
+        spec = EDITABLE_COLUMNS.get(column)
+        if spec:
+            self._begin_cell_edit(row_id, index, column, spec)
+        else:
+            self._open_edit_dialog(index)
+
+    def _dismiss_cell_editor(self, commit=True):
+        """收起当前就地编辑控件（commit=True 保存，False 丢弃）。"""
+        ed = self._cell_editor
+        self._cell_editor = None
+        if not ed:
+            return
+        widget, row_id, index, key, kind = (
+            ed['widget'], ed['row_id'], ed['index'], ed['key'], ed['kind'])
+        text = ''
+        try:
+            text = widget.get()
+        except Exception:
+            pass
+        try:
+            widget.destroy()
+        except Exception:
+            pass
+        if commit and index < len(self.grouped):
+            g = self.grouped[index]
+            if kind == 'number':
+                g[key] = _num(text)
+            else:
+                g[key] = text.strip()
+            try:
+                self.tree.item(row_id, values=self._row_values(index + 1, g))
+            except Exception:
+                pass
+
+    def _begin_cell_edit(self, row_id, index, column, spec):
+        """在 Treeview 单元格上覆盖一个编辑控件，回车/FocusOut 保存、Esc 取消。"""
+        self._dismiss_cell_editor(commit=True)  # 先提交上一个，避免编辑丢失
+        g = self.grouped[index]
+        key, kind = spec
+        bbox = self.tree.bbox(row_id, column)
+        if not bbox:
+            return
+        x, y, w, h = bbox
+        if kind == 'combo':
+            editor = ttk.Combobox(self.tree, state='normal', width=20,
+                                  values=[''] + list(self.route_opts))
+            editor.set(str(g.get(key) or ''))
+        else:
+            editor = ttk.Entry(self.tree, justify='center')
+            editor.insert(0, str(g.get(key)))
+        editor.place(x=x, y=y, width=w, height=h)
+        editor.lift()
+        editor.focus_set()
+        self._cell_editor = {'widget': editor, 'row_id': row_id,
+                             'index': index, 'key': key, 'kind': kind}
+        editor.bind('<Return>', lambda e: self._dismiss_cell_editor(commit=True))
+        editor.bind('<FocusOut>', lambda e: self._dismiss_cell_editor(commit=True))
+        editor.bind('<Escape>', lambda e: self._dismiss_cell_editor(commit=False))
 
     def _open_edit_dialog(self, index):
         g = self.grouped[index]
@@ -644,8 +753,35 @@ class DeliveryVehiclePage(BasePage):
 
     # ---------- 导出 ----------
     def clear_file(self):
+        """忘记当前仓库记住的路径，下次写入时重新选择。"""
+        self.saved_paths.pop(self.warehouse_name, None)
+        save_saved_paths(self.saved_paths)
         self.last_file = ''
-        self.status_text.set('已清除目标文件记录')
+        self.file_var.set('目标文件：%s（下次写入时重新选择）'
+                          % report_file_name(self.warehouse_name or '未知仓库'))
+        self.status_text.set('已清除 %s 的路径记录' % (self.warehouse_name or '当前仓库'))
+
+    def _resolve_write_path(self):
+        """解析写入路径：已记住则直接用（存在即可写，不存在则新建），否则询问并记住。
+
+        返回 path；用户取消对话框返回 None。抽出为独立方法便于离线测试。
+        """
+        warehouse = self.warehouse_name
+        default_name = report_file_name(warehouse)
+        saved = self.saved_paths.get(warehouse)
+        if saved:
+            return saved
+        path = filedialog.asksaveasfilename(
+            title='选择送货车辆 Excel（该路径将按仓库记住，已存在则追加）',
+            defaultextension='.xlsx',
+            initialfile=default_name,
+            initialdir=app_dir(),
+            filetypes=[('Excel 文件', '*.xlsx'), ('所有文件', '*.*')])
+        if not path:
+            return None
+        self.saved_paths[warehouse] = path
+        save_saved_paths(self.saved_paths)
+        return path
 
     def write_report(self):
         if not self.grouped:
@@ -653,14 +789,7 @@ class DeliveryVehiclePage(BasePage):
             return None
         if self.writing:
             return None
-        default_name = report_file_name(self.warehouse_name)
-        initial = os.path.join(app_dir(), default_name)
-        path = filedialog.asksaveasfilename(
-            title='选择送货车辆 Excel（已存在则追加，不存在则新建）',
-            defaultextension='.xlsx',
-            initialfile=default_name,
-            initialdir=app_dir(),
-            filetypes=[('Excel 文件', '*.xlsx'), ('所有文件', '*.*')])
+        path = self._resolve_write_path()
         if not path:
             return None
         self.writing = True
