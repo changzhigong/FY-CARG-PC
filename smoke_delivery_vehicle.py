@@ -274,7 +274,7 @@ try:
 finally:
     dv.app_dir = _orig_app_dir
 
-print('=== 10. 写入路径解析 + 就地编辑（GUI）===')
+print('=== 10. 写入路径解析 + 常驻可编辑控件（GUI）===')
 try:
     import tkinter as tk
     _td2 = tempfile.mkdtemp()
@@ -304,34 +304,41 @@ try:
     dv.filedialog.asksaveasfilename = lambda **kw: ''
     check('用户取消返回 None', _p._resolve_write_path() is None)
 
-    # 就地编辑：线路 Combobox / 数字 Entry / Esc 取消
+    # 常驻可编辑控件（免双击）：每行 5 个控件，实时写回
     _p.route_opts = ['商丘-永城', '商丘-民权']
     _p.grouped = [{'plateNumber': '豫A1', 'date': '2026-11-01', 'quantity': 5.0,
                    'amount': 100.0, 'deliverer': '张三', 'route': '',
-                   'returnQty': 0, 'brokenQty': 0}]
-    _p.tree.insert('', tk.END, iid='0', values=_p._row_values(1, _p.grouped[0]))
+                   'returnQty': 0, 'brokenQty': 0},
+                  {'plateNumber': '豫B2', 'date': '2026-11-02', 'quantity': 3.0,
+                   'amount': 60.0, 'deliverer': '李四', 'route': '商丘-民权',
+                   'returnQty': 1, 'brokenQty': 2}]
+    for _i, _g in enumerate(_p.grouped):
+        _p.tree.insert('', tk.END, iid=str(_i), values=_p._row_values(_i + 1, _g))
+    _p.row_ids = ['0', '1']
     _root.update(); _root.update_idletasks()
     check('可编辑列定义 5 列', len(dv.EDITABLE_COLUMNS) == 5)
-    _p._begin_cell_edit('0', 0, '#4', dv.EDITABLE_COLUMNS['#4'])
-    _root.update()
-    _w = _p._cell_editor['widget']
-    check('线路编辑器为 Combobox 且有候选',
-          'Combobox' in type(_w).__name__ and len(_w['values']) == 3)
-    _w.set('商丘-永城')
-    _p._dismiss_cell_editor(commit=True)
-    check('线路就地编辑已保存', _p.grouped[0]['route'] == '商丘-永城')
-    _p._begin_cell_edit('0', 0, '#5', dv.EDITABLE_COLUMNS['#5'])
-    _root.update()
-    _we = _p._cell_editor['widget']
-    _we.delete(0, tk.END); _we.insert(0, '12.5')
-    _p._dismiss_cell_editor(commit=True)
-    check('数字就地编辑已保存', _p.grouped[0]['quantity'] == 12.5)
-    _p._begin_cell_edit('0', 0, '#6', dv.EDITABLE_COLUMNS['#6'])
-    _root.update()
-    _wc = _p._cell_editor['widget']
-    _wc.delete(0, tk.END); _wc.insert(0, '999')
-    _p._dismiss_cell_editor(commit=False)
-    check('Esc 取消不改动原值', _p.grouped[0]['amount'] == 100.0)
+    _p._build_cell_widgets(); _root.update(); _root.update_idletasks()
+    check('每行常驻控件数=行数', len(_p.cell_widgets) == 2)
+    check('每行 5 个控件', len(_p.cell_widgets[0]['widgets']) == 5)
+    _types = [type(w).__name__ for w in _p.cell_widgets[0]['widgets']]
+    check('线路 Combobox + 4 数字 Entry',
+          'Combobox' in _types[0] and all('Entry' in t for t in _types[1:]))
+    check('第2行线路初值正确',
+          _p.cell_widgets[1]['vars']['route'].get() == '商丘-民权')
+    # 实时写回（免双击）：改值即写 grouped + 同步 tree
+    _p.cell_widgets[0]['vars']['route'].set('商丘-永城')
+    check('线路改值实时写回 grouped', _p.grouped[0]['route'] == '商丘-永城')
+    _p.cell_widgets[0]['vars']['quantity'].set('12.5')
+    check('数字改值实时写回 grouped', _p.grouped[0]['quantity'] == 12.5)
+    _tv = _p.tree.item('0', 'values')
+    check('Treeview 底层文本同步',
+          _tv[3] == '商丘-永城' and abs(float(_tv[4]) - 12.5) < 1e-6)
+    # 重定位：可见控件有 place 坐标
+    _p._position_cell_widgets(); _root.update()
+    _pl = _p.cell_widgets[0]['widgets'][0].place_info()
+    check('控件重定位到单元格', _pl.get('x') not in (None, ''))
+    _p._clear_cell_widgets()
+    check('清空常驻控件', _p.cell_widgets == [])
 
     _root.destroy()
     dv.filedialog.asksaveasfilename = _orig_ask

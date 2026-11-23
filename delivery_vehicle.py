@@ -77,8 +77,8 @@ PREVIEW_COLUMNS = ['序号', '车牌号', '出发日期', '线路', '送货片�
                    '总金额', '司机', '返程退货数', '破损数']
 PREVIEW_WIDTHS = [45, 120, 110, 160, 90, 100, 90, 95, 80]
 
-# 双击就地编辑：列号 -> (字段名, 控件类型)。仅这些列可编辑；
-# 序号/车牌/日期/司机 为分组键或只读展示，仍走整行对话框（双击这些列打开）。
+# 常驻可编辑列：列号 -> (字段名, 控件类型)。这些列直接显示编辑控件，无需双击；
+# 序号/车牌/日期/司机 为分组键或只读展示，仍显示纯文本（双击可打开整行对话框）。
 EDITABLE_COLUMNS = {
     '#4': ('route', 'combo'),       # 线路：候选 Combobox（按仓库预筛，可手输）
     '#5': ('quantity', 'number'),   # 送货片数
@@ -363,7 +363,7 @@ class DeliveryVehiclePage(BasePage):
         self.route_opts = []
         self.last_file = ''
         self.saved_paths = {}      # 仓库名 -> 上次写入路径（持久化）
-        self._cell_editor = None   # 当前就地编辑控件
+        self.cell_widgets = []     # 常驻可编辑控件（每行一个 dict）
         # 必须在 super().__init__() 之前加载：BasePage.__init__ 会调用
         # create_widgets() -> _build_filter()，Combobox 的 values 取自 warehouse_map；
         # 若放到 super 之后，构建下拉时 warehouse_map 仍为空 → 仓库选项为空。
@@ -455,7 +455,7 @@ class DeliveryVehiclePage(BasePage):
 
     def _build_tip(self, outer, row):
         tip = ('按「车牌号 + 发运日期」汇总片数/金额，每个车牌单独一个 sheet；'
-               '双击结果列表的 线路/片数/金额/退回数/破损数 单元格可直接就地编辑（回车保存、Esc 取消），'
+               '结果列表中 线路 直接显示下拉框、片数/金额/退货数/破损数 直接显示输入框，改后即时生效（无需双击）；'
                '双击车牌/日期/司机列可打开整行编辑。'
                '导出为追加写入（同 日期+线路+片数+金额 的行跳过），路径按仓库自动记住，无需每次选择。')
         ttk.Label(outer, text=tip, foreground='#409eff', wraplength=1000,
@@ -475,7 +475,7 @@ class DeliveryVehiclePage(BasePage):
             side=tk.LEFT, padx=10)
 
     def _build_preview(self, outer, row):
-        box = ttk.LabelFrame(outer, text='送货车辆预览（双击单元格就地编辑）', padding=4)
+        box = ttk.LabelFrame(outer, text='送货车辆预览（线路/片数/金额等直接编辑）', padding=4)
         box.grid(row=row, column=0, sticky='nsew', pady=(0, 4))
         box.columnconfigure(0, weight=1)
         box.rowconfigure(0, weight=1)
@@ -483,13 +483,26 @@ class DeliveryVehiclePage(BasePage):
         for col, width in zip(PREVIEW_COLUMNS, PREVIEW_WIDTHS):
             self.tree.heading(col, text=col)
             self.tree.column(col, width=width, anchor='center')
-        vsb = ttk.Scrollbar(box, orient=tk.VERTICAL, command=self.tree.yview)
-        hsb = ttk.Scrollbar(box, orient=tk.HORIZONTAL, command=self.tree.xview)
+        # 滚动条命令包一层：滚动后重定位常驻编辑控件（项目成熟模式，见 picking_shipping）
+        def _vsb_cmd(*args):
+            self.tree.yview(*args)
+            self._position_cell_widgets()
+
+        def _hsb_cmd(*args):
+            self.tree.xview(*args)
+            self._position_cell_widgets()
+
+        vsb = ttk.Scrollbar(box, orient=tk.VERTICAL, command=_vsb_cmd)
+        hsb = ttk.Scrollbar(box, orient=tk.HORIZONTAL, command=_hsb_cmd)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         self.tree.grid(row=0, column=0, sticky='nsew')
         vsb.grid(row=0, column=1, sticky='ns')
         hsb.grid(row=1, column=0, sticky='ew')
         self.tree.bind('<Double-1>', self._on_double_click)
+        # 编辑控件跟随滚动/缩放/交互重定位
+        for ev in ('<Configure>', '<Map>', '<ButtonPress-1>', '<MouseWheel>',
+                   '<Button-4>', '<Button-5>'):
+            self.tree.bind(ev, self._on_tree_event, add='+')
         self.row_ids = []
 
     def _build_status(self, outer, row):
@@ -598,6 +611,7 @@ class DeliveryVehiclePage(BasePage):
         self.warehouse_name = warehouse
         self.grouped = group_by_plate_and_date(rows, warehouse)
         self.route_opts = route_options(get_route_area(warehouse))
+        self._clear_cell_widgets()
         try:
             for iid in self.tree.get_children():
                 self.tree.delete(iid)
@@ -611,6 +625,12 @@ class DeliveryVehiclePage(BasePage):
                              tags=('odd',) if idx % 2 == 0 else ())
             self.row_ids.append(iid)
         self.tree.tag_configure('odd', background='#fafafa')
+        self._build_cell_widgets()
+        # 布局稳定后定位一次；后续由滚动/缩放事件跟随
+        try:
+            self.controller.after(30, self._position_cell_widgets)
+        except Exception:
+            self._position_cell_widgets()
         saved = self.saved_paths.get(warehouse)
         self.file_var.set('目标文件：%s' % (saved if saved
                                           else '%s（首次写入时选择）' % report_file_name(warehouse)))
@@ -628,9 +648,9 @@ class DeliveryVehiclePage(BasePage):
             int(_num(g.get('brokenQty'))) if g.get('brokenQty') not in (None, '') else 0,
         ]
 
-    # ---------- 双击编辑 ----------
+    # ---------- 常驻可编辑控件（无需双击）----------
     def _on_double_click(self, event):
-        """双击分两类：可编辑列就地编辑；车牌/日期/司机列打开整行对话框。"""
+        """可编辑列已是常驻控件；双击只读列（车牌/日期/司机）打开整行对话框。"""
         row_id = self.tree.identify_row(event.y)
         if not row_id:
             return
@@ -641,64 +661,87 @@ class DeliveryVehiclePage(BasePage):
         if index >= len(self.grouped):
             return
         column = self.tree.identify_column(event.x)
-        spec = EDITABLE_COLUMNS.get(column)
-        if spec:
-            self._begin_cell_edit(row_id, index, column, spec)
-        else:
+        if column not in EDITABLE_COLUMNS:
             self._open_edit_dialog(index)
 
-    def _dismiss_cell_editor(self, commit=True):
-        """收起当前就地编辑控件（commit=True 保存，False 丢弃）。"""
-        ed = self._cell_editor
-        self._cell_editor = None
-        if not ed:
-            return
-        widget, row_id, index, key, kind = (
-            ed['widget'], ed['row_id'], ed['index'], ed['key'], ed['kind'])
-        text = ''
-        try:
-            text = widget.get()
-        except Exception:
-            pass
-        try:
-            widget.destroy()
-        except Exception:
-            pass
-        if commit and index < len(self.grouped):
-            g = self.grouped[index]
-            if kind == 'number':
-                g[key] = _num(text)
-            else:
-                g[key] = text.strip()
-            try:
-                self.tree.item(row_id, values=self._row_values(index + 1, g))
-            except Exception:
-                pass
+    def _clear_cell_widgets(self):
+        """销毁所有常驻编辑控件（重新查询前调用）。"""
+        for row in self.cell_widgets:
+            for widget in row.get('widgets', []):
+                try:
+                    widget.destroy()
+                except Exception:
+                    pass
+        self.cell_widgets = []
 
-    def _begin_cell_edit(self, row_id, index, column, spec):
-        """在 Treeview 单元格上覆盖一个编辑控件，回车/FocusOut 保存、Esc 取消。"""
-        self._dismiss_cell_editor(commit=True)  # 先提交上一个，避免编辑丢失
-        g = self.grouped[index]
-        key, kind = spec
-        bbox = self.tree.bbox(row_id, column)
-        if not bbox:
+    def _build_cell_widgets(self):
+        """为每一行的可编辑列创建常驻控件：线路=Combobox，其余=Entry。
+
+        控件置于 Treeview 之上（place），值用 StringVar + trace 实时写回
+        self.grouped，并同步 Treeview 底层文本，保证导出读到的是最新值。
+        """
+        self._clear_cell_widgets()
+        for index, g in enumerate(self.grouped):
+            row_id = str(index)
+            entry = {'row_id': row_id, 'index': index,
+                     'widgets': [], 'vars': {}}
+            for column, (key, kind) in EDITABLE_COLUMNS.items():
+                value = g.get(key)
+                var = tk.StringVar()
+                if kind == 'combo':
+                    widget = ttk.Combobox(
+                        self.tree, textvariable=var, state='normal',
+                        values=[''] + list(self.route_opts))
+                else:
+                    widget = ttk.Entry(self.tree, textvariable=var,
+                                       justify='center')
+                # 先加 trace 再赋初值？——不：赋初值会触发一次写回，但值相同无害；
+                # 先赋初值再加 trace 可避免初始化时的无谓回写。
+                var.set('' if value is None else str(value))
+                var.trace_add('write', lambda *a, i=index, k=key, v=var:
+                              self._on_cell_value_changed(i, k, v))
+                entry['widgets'].append(widget)
+                entry['vars'][key] = var
+            self.cell_widgets.append(entry)
+
+    def _on_cell_value_changed(self, index, key, var):
+        """常驻控件值变化 → 实时写回 grouped + 同步 Treeview 底层文本。"""
+        if index >= len(self.grouped):
             return
-        x, y, w, h = bbox
-        if kind == 'combo':
-            editor = ttk.Combobox(self.tree, state='normal', width=20,
-                                  values=[''] + list(self.route_opts))
-            editor.set(str(g.get(key) or ''))
-        else:
-            editor = ttk.Entry(self.tree, justify='center')
-            editor.insert(0, str(g.get(key)))
-        editor.place(x=x, y=y, width=w, height=h)
-        editor.lift()
-        editor.focus_set()
-        self._cell_editor = {'widget': editor, 'row_id': row_id,
-                             'index': index, 'key': key, 'kind': kind}
-        editor.bind('<Return>', lambda e: self._dismiss_cell_editor(commit=True))
-        editor.bind('<FocusOut>', lambda e: self._dismiss_cell_editor(commit=True))
-        editor.bind('<Escape>', lambda e: self._dismiss_cell_editor(commit=False))
+        text = var.get()
+        g = self.grouped[index]
+        if key == 'route':
+            g[key] = text.strip()
+        elif key in ('quantity', 'amount', 'returnQty', 'brokenQty'):
+            g[key] = _num(text)
+        try:
+            row_id = str(index)
+            self.tree.item(row_id,
+                           values=self._row_values(index + 1, g))
+        except Exception:
+            pass
+
+    def _position_cell_widgets(self, event=None):
+        """把常驻控件定位到对应单元格；不可见行 place_forget（随滚动复用）。"""
+        for entry in self.cell_widgets:
+            row_id = entry['row_id']
+            for column, widget in zip(EDITABLE_COLUMNS.keys(),
+                                      entry['widgets']):
+                try:
+                    bbox = self.tree.bbox(row_id, column)
+                    if bbox:
+                        x, y, w, h = bbox
+                        widget.place(x=x, y=y, width=w, height=h)
+                        widget.lift()
+                    else:
+                        widget.place_forget()
+                except tk.TclError:
+                    # item 被删除或不可见
+                    pass
+
+    def _on_tree_event(self, event=None):
+        """树控件交互事件统一触发重定位（绑定在 <Configure>/<MouseWheel> 等）。"""
+        self._position_cell_widgets()
 
     def _open_edit_dialog(self, index):
         g = self.grouped[index]
@@ -742,6 +785,10 @@ class DeliveryVehiclePage(BasePage):
                     if iid == str(index):
                         self.tree.item(iid, values=self._row_values(index + 1, g))
                         break
+                # 同步常驻控件显示值（trace 写回同值，无副作用）
+                if index < len(self.cell_widgets):
+                    for key, var in self.cell_widgets[index]['vars'].items():
+                        var.set('' if g.get(key) is None else str(g[key]))
                 dlg.destroy()
             except Exception as e:
                 messagebox.showerror('错误', '保存失败: %s' % e, parent=dlg)
