@@ -21,6 +21,11 @@ from bill_query import BillQueryPage
 from sales_detail import SalesDetailPage
 from inventory_record import InventoryRecordPage
 from transfer_detail_query import TransferDetailQueryPage
+from location_stock_query import LocationStockQueryPage
+from location_adjust_query import LocationAdjustQueryPage
+from loss_report_query import LossReportQueryPage
+from overflow_report_query import OverflowReportQueryPage
+from receipt_all_query import ReceiptAllQueryPage
 from reimbursement_manage import ReimbursementManagePage
 from reimbursement_review import ReimbursementReviewPage
 from other_pay_manage import OtherPayManagePage
@@ -179,6 +184,11 @@ class MainApplication:
             "SalesDetailPage": SalesDetailPage,
             "InventoryRecordPage": InventoryRecordPage,
             "TransferDetailQueryPage": TransferDetailQueryPage,
+            "LocationStockQueryPage": LocationStockQueryPage,
+            "LocationAdjustQueryPage": LocationAdjustQueryPage,
+            "LossReportQueryPage": LossReportQueryPage,
+            "OverflowReportQueryPage": OverflowReportQueryPage,
+            "ReceiptAllQueryPage": ReceiptAllQueryPage,
             "ReimbursementManagePage": ReimbursementManagePage,
             "ReimbursementReviewPage": ReimbursementReviewPage,
             "OtherPayManagePage": OtherPayManagePage,
@@ -627,7 +637,8 @@ class MainApplication:
             ("快捷操作", ["送货日报", "财务日报"]),
             ("仓库理货", ["出库单管理", "拣货单管理", "发运单管理", "送货车辆"]),
             ("库内作业", ["调拨入库", "调拨申请", "移库管理"]),
-            ("仓储查询", ["库存冻结查询", "装箱明细查询", "账单查询", "销售明细", "出入库流水记录", "调拨明细查询"]),
+            ("仓储查询", ["库存冻结查询", "装箱明细查询", "账单查询", "销售明细", "出入库流水记录", "调拨明细查询",
+                        "库位库存查询", "移库单查询", "报损单查询", "报溢单查询", "进货汇总查询"]),
             ("报销管理", ["报销管理", "报销审核", "其他支付管理"]),
             ("内部领用", ["内部领用", "部门审核"]),
             ("其他出入库管理", ["其他入库审核", "报损出库申请", "其它出库审核"]),
@@ -739,6 +750,11 @@ class MainApplication:
                 "销售明细": "SalesDetailPage",
                 "出入库流水记录": "InventoryRecordPage",
                 "调拨明细查询": "TransferDetailQueryPage",
+                "库位库存查询": "LocationStockQueryPage",
+                "移库单查询": "LocationAdjustQueryPage",
+                "报损单查询": "LossReportQueryPage",
+                "报溢单查询": "OverflowReportQueryPage",
+                "进货汇总查询": "ReceiptAllQueryPage",
                 "报销管理": "ReimbursementManagePage",
                 "报销审核": "ReimbursementReviewPage",
                 "其他支付管理": "OtherPayManagePage",
@@ -1002,6 +1018,11 @@ class MainApplication:
             "SalesDetailPage": "仓储查询",
             "InventoryRecordPage": "仓储查询",
             "TransferDetailQueryPage": "仓储查询",
+            "LocationStockQueryPage": "仓储查询",
+            "LocationAdjustQueryPage": "仓储查询",
+            "LossReportQueryPage": "仓储查询",
+            "OverflowReportQueryPage": "仓储查询",
+            "ReceiptAllQueryPage": "仓储查询",
             "ReimbursementManagePage": "报销管理",
             "ReimbursementReviewPage": "报销管理",
             "OtherPayManagePage": "报销管理",
@@ -1039,6 +1060,11 @@ class MainApplication:
                         "SalesDetailPage": "销售明细",
                         "InventoryRecordPage": "出入库流水记录",
                         "TransferDetailQueryPage": "调拨明细查询",
+                        "LocationStockQueryPage": "库位库存查询",
+                        "LocationAdjustQueryPage": "移库单查询",
+                        "LossReportQueryPage": "报损单查询",
+                        "OverflowReportQueryPage": "报溢单查询",
+                        "ReceiptAllQueryPage": "进货汇总查询",
                         "ReimbursementManagePage": "报销管理",
                         "ReimbursementReviewPage": "报销审核",
                         "OtherPayManagePage": "其他支付管理",
